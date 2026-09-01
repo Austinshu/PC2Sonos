@@ -9,12 +9,15 @@ bundled inside it (see build_installer.ps1):
                                   Burel, donationware -- vb-audio.com)
 
 What one double-click does on a fresh x64 PC:
-    1. installs PC2Sonos.exe to  %LOCALAPPDATA%\\PC2Sonos\\app
+    1. installs PC2Sonos.exe (+ PC2Sonos-Uninstall.exe) to
+       %LOCALAPPDATA%\\PC2Sonos\\app
     2. installs the VB-CABLE virtual audio driver if it's missing
        (silent; falls back to VB-Audio's visible installer window)
     3. sets "CABLE Input" as the Windows default output device
     4. registers PC2Sonos to start at every login + Desktop shortcut
-    5. starts it now and opens the dashboard
+    5. registers PC2Sonos in Windows' "Apps & Features" so it can be
+       removed the normal way, not via manual instructions
+    6. starts it now and opens the dashboard
 
 No Python, no pip, no manual audio settings on the target machine.
 """
@@ -25,10 +28,12 @@ import shutil
 import subprocess
 import sys
 import time
+import winreg
 from pathlib import Path
 
 APP_NAME = "PC2Sonos"
 DASHBOARD = "http://127.0.0.1:5757"
+UNINSTALL_KEY = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{APP_NAME}"
 
 
 def say(msg):
@@ -68,7 +73,43 @@ def install_app_files():
     time.sleep(1.0)
     shutil.copy2(src, dst)
     say(f"  installed {dst}")
-    return dst
+
+    # the uninstaller ships as its own small exe (built the same way as
+    # this installer) so it can be run standalone later, long after this
+    # setup exe's own temp extraction has been cleaned up -- copy it in
+    # persistently rather than relying on anything from this payload dir
+    uninstall_src = payload_dir() / f"{APP_NAME}-Uninstall.exe"
+    uninstall_dst = dst_dir / f"{APP_NAME}-Uninstall.exe"
+    if uninstall_src.exists():
+        shutil.copy2(uninstall_src, uninstall_dst)
+        say(f"  installed {uninstall_dst}")
+    else:
+        uninstall_dst = None
+        say("  !! PC2Sonos-Uninstall.exe missing from payload -- Apps & Features entry skipped")
+
+    return dst, uninstall_dst
+
+
+def register_uninstaller(exe_path, uninstall_exe_path):
+    """Adds PC2Sonos to Windows' "Apps & Features" list with a working
+    Uninstall button, instead of leaving removal as something someone
+    has to be handed manual instructions for."""
+    if not uninstall_exe_path:
+        return
+    try:
+        with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, UNINSTALL_KEY) as key:
+            winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_NAME)
+            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "1.0.0")
+            winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, APP_NAME)
+            winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{uninstall_exe_path}"')
+            winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(exe_path))
+            winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(exe_path.parent))
+            winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "EstimatedSize", 0, winreg.REG_DWORD, 90000)
+        say("  registered in Settings > Apps (uninstall the normal way, anytime)")
+    except Exception as e:
+        say(f"  couldn't register Apps & Features entry: {e}")
 
 
 def install_cable_driver():
@@ -181,25 +222,28 @@ def main():
         input("Press Enter to exit...")
         return 1
 
-    say("[1/6] Installing app files...")
-    exe = install_app_files()
+    say("[1/7] Installing app files...")
+    exe, uninstall_exe = install_app_files()
 
-    say("[2/6] Virtual audio cable...")
+    say("[2/7] Virtual audio cable...")
     ok = install_cable_driver()
 
-    say("[3/6] Audio routing...")
+    say("[3/7] Audio routing...")
     if ok:
         set_default_output()
     else:
         say("  skipped (driver not installed)")
 
-    say("[4/6] Firewall...")
+    say("[4/7] Firewall...")
     open_firewall(exe)
 
-    say("[5/6] Autostart...")
+    say("[5/7] Autostart...")
     make_shortcuts(exe)
 
-    say("[6/6] Starting PC2Sonos...")
+    say("[6/7] Registering with Windows...")
+    register_uninstaller(exe, uninstall_exe)
+
+    say("[7/7] Starting PC2Sonos...")
     launch_unelevated(exe)
 
     say("")
