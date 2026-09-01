@@ -1,0 +1,9 @@
+soco
+pycaw
+comtypes
+pyaudiowpatch
+flask
+pystray
+pillow
+pyinstaller
+numpy

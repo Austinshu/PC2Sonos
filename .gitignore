@@ -1,0 +1,15 @@
+# Build artifacts and caches -- not source
+__pycache__/
+build/
+*.pyc
+
+# Compiled binaries -- distributed via GitHub Releases, not committed here
+*.exe
+
+# Third-party VB-CABLE driver payload -- bundled at build time by
+# build_installer.ps1, not our source (see README's Credits section)
+payload/
+
+# Local build/install logs -- machine-specific, not useful to anyone else
+install-log.txt
+installer-build-log.txt
