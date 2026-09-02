@@ -190,7 +190,7 @@ def run_calibration_acoustic():
     of peaks and return a confident-looking but wrong number, or a
     drifting one across repeated runs. See run_calibration_silent() for
     an alternative that doesn't depend on the room's acoustics at all."""
-    old_delay = config.get("local_delay_ms", 1500)
+    old_delay = config.get("local_delay_ms", 0)
     changed_delay = False
     try:
         from sonos_ctl import speaker_mgr

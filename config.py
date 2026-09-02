@@ -60,8 +60,9 @@ DEFAULT_CONFIG = {
     "render_device_substr": "",
     # How long (ms) to hold back the LOCAL speaker output so it lines up
     # with the Sonos speakers. This is the number the dashboard slider
-    # controls. Start around 1500ms and tune by ear.
-    "local_delay_ms": 1500,
+    # controls. Starts at 0 on a fresh install -- use the Auto button (or
+    # drag the slider up by ear) to find the right value for your setup.
+    "local_delay_ms": 0,
     "sample_rate": 44100,
     "channels": 2,
     "sample_width": 2,  # bytes (16-bit PCM)
