@@ -61,8 +61,23 @@ fake_pyaudio.PyAudio = FakePyAudio
 sys.modules["pyaudiowpatch"] = fake_pyaudio
 
 # ---- now safe to import our modules ----
-from config import DEFAULT_CONFIG, load_config, save_config, config  # noqa: E402
+from config import DEFAULT_CONFIG, CONFIG_PATH, load_config, save_config, config  # noqa: E402
 import audio_engine  # noqa: E402
+
+# This harness writes to the real config.json (the round-trip test below,
+# and every POST route that calls save_config). On a dev box that's the
+# live PC2Sonos config -- snapshot it now and put it back on exit no
+# matter how the run ends.
+import atexit  # noqa: E402
+_ORIG_CONFIG_BYTES = CONFIG_PATH.read_bytes() if CONFIG_PATH.exists() else None
+
+
+@atexit.register
+def _restore_real_config():
+    if _ORIG_CONFIG_BYTES is None:
+        CONFIG_PATH.unlink(missing_ok=True)
+    else:
+        CONFIG_PATH.write_bytes(_ORIG_CONFIG_BYTES)
 
 print("[test] config round-trip...")
 cfg = dict(DEFAULT_CONFIG)
@@ -163,6 +178,35 @@ wav = webapp.wav_header(44100, 2, 2)
 assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE" and b"fmt " in wav and b"data" in wav
 print("  wav_header() OK")
 
+# dashboard password: open by default, enforced once PASSWORD_PATH exists,
+# stream endpoint always open (Sonos can't do HTTP auth)
+def _test_dashboard_password():
+    import base64
+    from config import PASSWORD_PATH
+    if PASSWORD_PATH.exists():
+        print(f"  dashboard password test SKIPPED ({PASSWORD_PATH} exists -- won't touch a real one)")
+        return
+    assert webapp._dashboard_password() is None
+    assert client.get("/").status_code == 200, "open when no password file"
+    PASSWORD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PASSWORD_PATH.write_text("  s3cret \n", encoding="utf-8")  # whitespace stripped
+    try:
+        assert webapp._dashboard_password() == "s3cret"
+        assert client.get("/").status_code == 401, "protected once the file exists"
+        assert client.get("/api/speakers").status_code == 401
+        hdr = lambda u, p: {"Authorization": "Basic " + base64.b64encode(f"{u}:{p}".encode()).decode()}
+        assert client.get("/", headers=hdr("x", "s3cret")).status_code == 200
+        assert client.get("/", headers=hdr("x", "nope")).status_code == 401
+        assert client.get("/stream/RINCON_X.wav", headers=hdr("x", "nope")).status_code != 401, \
+            "stream endpoint must stay open for Sonos"
+    finally:
+        PASSWORD_PATH.unlink()
+    assert webapp._dashboard_password() is None, "removing the file re-opens the dashboard"
+    print("  dashboard password OK (open by default, enforced when set)")
+
+
+_test_dashboard_password()
+
 print("[test] watchdog restarts dropped streams, respects other sources + cooldown...")
 import sonos_ctl  # noqa: E402
 
@@ -197,6 +241,7 @@ class FakeZone:
 
 mgr = sonos_ctl.SpeakerManager()
 base = "http://192.168.1.5:5757"
+_wd_saved_speakers = dict(webapp.config["speakers"])  # restored at end of this block
 
 uid_a = "RINCON_AAAA0001"
 za = FakeZone(uid_a, f"{base}/stream/{uid_a}.wav", "STOPPED")  # our stream, dropped
@@ -236,6 +281,120 @@ webapp.config["speakers"][uid_c] = {"enabled": True, "volume": 50}
 mgr.watchdog_tick(base)
 assert zc.play_count == 1, "idle speaker should be claimed at boot"
 assert zb.play_count == 0, "actively-playing other source must stay untouched"
+webapp.config["speakers"] = _wd_saved_speakers  # don't leak fake speakers to config.json
+print("  OK")
+
+print("[test] startup: default speaker + new-speaker-enabled default...")
+_cfg = sonos_ctl.config
+_saved = {k: _cfg.get(k) for k in
+          ("default_speaker_ip", "default_speaker_uid", "new_speakers_default_enabled")}
+_saved_speakers = dict(_cfg["speakers"])  # these tests call save_config()
+try:
+    m2 = sonos_ctl.SpeakerManager()
+
+    # _default_enabled_for: follows the config flag, but the default
+    # speaker is always enabled
+    _cfg["new_speakers_default_enabled"] = False
+    _cfg["default_speaker_uid"] = "RINCON_DEFAULT"
+    assert m2._default_enabled_for("RINCON_OTHER") is False
+    assert m2._default_enabled_for("RINCON_DEFAULT") is True
+    _cfg["new_speakers_default_enabled"] = True
+    assert m2._default_enabled_for("RINCON_OTHER") is True
+
+    # prime_default_speaker: reachable IP -> registered + uid recorded
+    class FakeSoCo:
+        def __init__(self, ip):
+            if ip == "10.0.0.9":
+                raise OSError("unreachable")
+            self.ip_address = ip
+            self.uid = "RINCON_PRIMED" if ip == "10.0.0.5" else "RINCON_SOMEONEELSE"
+            self.player_name = "Primed"
+        @property
+        def group(self):
+            return None
+    _orig_soco = sonos_ctl.SoCo
+    _orig_sleep = sonos_ctl.time.sleep
+    sonos_ctl.SoCo = FakeSoCo
+    sonos_ctl.time.sleep = lambda _s: None   # don't wait out the prime retry
+    try:
+        _cfg["default_speaker_ip"] = ""
+        _cfg["default_speaker_uid"] = ""
+        assert m2.prime_default_speaker() is None, "blank IP -> nothing"
+
+        _cfg["default_speaker_ip"] = "10.0.0.5"
+        _cfg["default_speaker_uid"] = ""
+        assert m2.prime_default_speaker() == "RINCON_PRIMED"
+        assert _cfg["default_speaker_uid"] == "RINCON_PRIMED", "uid auto-recorded"
+        assert "RINCON_PRIMED" in m2.speakers
+        assert _cfg["speakers"]["RINCON_PRIMED"]["enabled"] is True
+
+        # IP now answers as a different device -> ignored
+        m2b = sonos_ctl.SpeakerManager()
+        _cfg["default_speaker_ip"] = "10.0.0.7"  # -> RINCON_SOMEONEELSE
+        assert m2b.prime_default_speaker() is None, "uid mismatch -> ignore the IP"
+
+        # unreachable IP -> None, no crash
+        m2c = sonos_ctl.SpeakerManager()
+        _cfg["default_speaker_uid"] = ""
+        _cfg["default_speaker_ip"] = "10.0.0.9"
+        assert m2c.prime_default_speaker() is None
+    finally:
+        sonos_ctl.SoCo = _orig_soco
+        sonos_ctl.time.sleep = _orig_sleep
+
+    # set_default_speaker: pin by uid (needs a known IP), and clear
+    m3 = sonos_ctl.SpeakerManager()
+    m3.speakers["RINCON_X"] = FakeZone("RINCON_X", "", "STOPPED")
+    m3.speakers["RINCON_X"].ip_address = "10.0.0.42"
+    assert m3.set_default_speaker("RINCON_X") is True
+    assert _cfg["default_speaker_ip"] == "10.0.0.42"
+    assert _cfg["default_speaker_uid"] == "RINCON_X"
+    assert m3.set_default_speaker("RINCON_UNKNOWN") is False, "no IP -> refuse"
+    assert m3.set_default_speaker(None) is True
+    assert _cfg["default_speaker_ip"] == "" and _cfg["default_speaker_uid"] == ""
+    print("  OK")
+finally:
+    _cfg.update(_saved)
+    _cfg["speakers"] = _saved_speakers
+    sonos_ctl.save_config(_cfg)
+
+print("[test] on_demand discovery loop: one pass, then idle until asked...")
+import main as _main  # noqa: E402
+_calls = []
+_orig_rd = sonos_ctl.speaker_mgr.rediscover
+sonos_ctl.speaker_mgr.rediscover = lambda: _calls.append(1)
+try:
+    _stop = threading.Event()
+    # shrink the 20s safety-net wait so the test is quick
+    _t = threading.Thread(target=_main.sonos_discovery_loop, args=(_stop, True), daemon=True)
+    # monkeypatch stop_event.wait so the initial 20s becomes instant
+    _real_wait = _stop.wait
+    _stop.wait = lambda t=None: _real_wait(0.05 if t == 20 else (t or 0))
+    _t.start()
+    time.sleep(0.6)
+    assert len(_calls) == 1, f"on_demand should scan exactly once up front, got {len(_calls)}"
+    sonos_ctl.speaker_mgr.rescan_requested.set()  # simulate the Rescan button
+    time.sleep(0.4)
+    assert len(_calls) == 2, "a rescan request should trigger exactly one more scan"
+    _stop.set()
+    sonos_ctl.speaker_mgr.rescan_requested.set()
+finally:
+    sonos_ctl.speaker_mgr.rediscover = _orig_rd
+    sonos_ctl.speaker_mgr.rescan_requested.clear()
+print("  OK")
+
+print("[test] single-instance lock: second acquire is refused...")
+# unique name so this doesn't collide with a real running PC2Sonos.exe
+_lock_name = f"PC2Sonos-test-{os.getpid()}"
+_h1 = _main.acquire_single_instance_lock(_lock_name)
+assert _h1 is not None, "first acquire should succeed"
+_h2 = _main.acquire_single_instance_lock(_lock_name)
+if sys.platform == "win32":
+    assert _h2 is None, "second acquire (same name) must be refused"
+    import ctypes as _ct
+    _ct.WinDLL("kernel32").CloseHandle(_h1)  # release so nothing wedges
+else:
+    assert _h2 is not None, "non-Windows: lock is a no-op, always granted"
 print("  OK")
 
 print("[test] diagnostics module...")

@@ -45,7 +45,54 @@ idea as the "audio delay" / lip-sync offset setting on an AV receiver.
 
 After that, it's fully automatic: log into Windows, PC2Sonos starts
 quietly in the system tray, and every Sonos speaker you enabled starts
-receiving audio.
+receiving audio. The dashboard opens in your browser on the very first
+run only; after that a small tray notification just confirms it started,
+and the dashboard is one click away on the tray icon.
+
+### Optional: start faster after a reboot
+
+Normally PC2Sonos runs a network scan at startup to find your speakers,
+which takes 15-20 seconds before audio begins. If you mostly stream to
+one speaker, click the **&#9733;** next to it in the dashboard to make it
+the *default speaker*: PC2Sonos then talks to that speaker directly at
+launch and starts playing in a second or two, and the full scan happens
+in the background. Give that speaker a DHCP reservation in your router so
+its address doesn't change.
+
+To go further, set `"discovery_mode": "on_demand"` in `config.json`: once
+the default speaker is up, the repeating background scan stops entirely
+(it runs once as a safety net, then only when you press **Rescan**).
+
+By default a newly-discovered speaker starts out enabled (a fresh install
+lights up everything and you turn off what you don't want). Set
+`"new_speakers_default_enabled": false` in `config.json` to have new
+speakers stay off until you enable them -- handy on a busy network.
+
+### Optional: password-protect the dashboard
+
+By default the dashboard has no password -- PC2Sonos assumes it's running
+on a network you control.
+
+To require one, create a file named `dashboard_password.txt` in the
+PC2Sonos data folder -- the same folder that holds `config.json` and
+`pc2sonos.log` (its full path is printed at the top of `pc2sonos.log`
+every time the app starts; on a normal install it's
+`%ProgramData%\PC2Sonos`). Put the password on the first line and save.
+
+It takes effect on the next page load -- the browser will ask for a
+username (anything works) and the password. Delete the file to remove the
+password again.
+
+What this is and isn't: it's a low-effort gate to keep other people on
+the same LAN (housemates, guests on the wifi) from opening the dashboard
+and toggling your speakers or changing settings. It is **not** strong
+security. The password sits in a plain text file, it's sent over plain
+HTTP (base64-encoded, not encrypted -- anyone who can capture traffic on
+your network can read it), and the audio stream endpoint stays open
+because Sonos speakers can't authenticate. Don't reuse a password you
+care about, and don't rely on this if the dashboard is somehow reachable
+from outside your home network. The file is deliberately kept out of the
+diagnostics export so it isn't shared by accident.
 
 ## Running from source (for development)
 

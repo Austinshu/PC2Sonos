@@ -2,16 +2,64 @@
 
 import io
 import queue
+import secrets
 import struct
 import time
 
 from flask import Flask, Response, jsonify, render_template_string, request
 
 from audio_engine import CHUNK, broadcaster, list_output_devices, restart_render, get_current_render_device_name, get_lan_ip
-from config import config, save_config
+from config import config, save_config, PASSWORD_PATH
 from sonos_ctl import speaker_mgr
 
 app = Flask(__name__)
+
+# (password_text, mtime_ns) cache so we re-read dashboard_password.txt only
+# when it actually changes -- create/edit the file and the next request
+# picks it up, no restart.
+_pw_cache = (None, None)
+
+
+def _dashboard_password():
+    """The current dashboard password, or None if the dashboard is open.
+
+    Open (None) when PASSWORD_PATH doesn't exist or is blank -- this is
+    the default: the app works on a trusted LAN with no setup, and
+    someone who wants a password just drops one line of text in that
+    file (path logged at startup)."""
+    global _pw_cache
+    try:
+        mtime = PASSWORD_PATH.stat().st_mtime_ns
+    except OSError:
+        _pw_cache = (None, None)
+        return None
+    if mtime != _pw_cache[1]:
+        try:
+            _pw_cache = (PASSWORD_PATH.read_text(encoding="utf-8").strip() or None, mtime)
+        except OSError:
+            _pw_cache = (None, None)
+    return _pw_cache[0]
+
+
+@app.before_request
+def require_auth():
+    # The stream endpoint is fetched directly by Sonos speakers, which
+    # can't respond to an HTTP auth challenge -- leave it open, same as
+    # every other PC->Sonos streamer. Everything else (the dashboard +
+    # /api/*) requires the password IF one has been configured.
+    if request.path.startswith("/stream/"):
+        return
+    password = _dashboard_password()
+    if password is None:
+        return
+    auth = request.authorization
+    given = auth.password if auth and auth.password is not None else ""
+    # compare as bytes -- str compare_digest raises on non-ASCII input
+    if not secrets.compare_digest(given.encode("utf-8"), password.encode("utf-8")):
+        return Response(
+            "Authentication required", 401,
+            {"WWW-Authenticate": 'Basic realm="PC2Sonos"'}
+        )
 
 # PC2Sonos is free. This is a "pay what you want" link for anyone who
 # finds it useful and wants to support development -- nothing in the app
@@ -108,8 +156,33 @@ DASHBOARD_HTML = """
 </div>
 
 <div class="card">
-  <label style="margin-bottom:0;">Sonos speakers</label>
+  <div style="display:flex; align-items:center; justify-content:space-between;">
+    <label style="margin-bottom:0;">Sonos speakers</label>
+    <button onclick="rescan()" style="background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;">Rescan</button>
+  </div>
+  <div style="font-size:11px; color:#777; margin:2px 0 8px;">
+    &#9733; = default speaker: streamed to the instant PC2Sonos starts, before
+    a network scan finishes. Click a star to set it.
+  </div>
   <div id="speakers"></div>
+  <div id="rescanResult" style="margin-top:6px; font-size:12px; color:#888;"></div>
+  <details style="margin-top:12px; font-size:12px; color:#aaa;">
+    <summary style="cursor:pointer; color:#ccc;">Speakers not showing up? (different subnet / IoT VLAN)</summary>
+    <div style="margin-top:10px; line-height:1.5;">
+      Automatic discovery uses network multicast, which most routers don't
+      pass between VLANs. If your Sonos speakers are on a separate (e.g.
+      IoT) network, type <strong>one speaker's IP address</strong> below &mdash;
+      the app will reach it directly and find the rest from it. Give that
+      speaker a DHCP reservation so its IP doesn't change. Comma-separate
+      to list more than one.
+      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <input type="text" id="seedIps" placeholder="10.0.20.41, 10.0.20.42"
+               style="flex:1; min-width:180px; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+        <button onclick="saveSeedIps()">Save &amp; scan</button>
+      </div>
+      <div id="seedResult" style="margin-top:8px; color:#888;"></div>
+    </div>
+  </details>
 </div>
 
 <div class="card">
@@ -164,7 +237,11 @@ async function refresh(){
     const div = document.createElement('div');
     div.className = 'speaker';
     const grouped = s.grouped_with && s.grouped_with.length;
+    const star = s.is_default ? '&#9733;' : '&#9734;';
+    const starTitle = s.is_default ? 'Default speaker (click to unset)' : 'Set as default speaker';
     div.innerHTML = `
+      <span onclick="setDefault('${s.uid}', ${s.is_default})" title="${starTitle}"
+            style="cursor:pointer; font-size:16px; color:${s.is_default ? '#f5c518' : '#666'};">${star}</span>
       <input type="checkbox" class="toggle" ${s.enabled ? 'checked' : ''} onchange="toggle('${s.uid}', this.checked)">
       <span class="name">${s.name}${grouped ? ` <span style="font-weight:400; color:#888; font-size:12px;">(grouped with ${s.grouped_with.join(', ')} &mdash; this also controls them)</span>` : ''}</span>
       <input type="range" min="0" max="100" value="${s.volume}" onchange="setVol('${s.uid}', this.value)">
@@ -173,6 +250,45 @@ async function refresh(){
     `;
     el.appendChild(div);
   });
+}
+async function rescan(){
+  const el = document.getElementById('rescanResult');
+  el.textContent = 'Scanning the network...';
+  try {
+    const res = await fetch('/api/rescan', {method:'POST'});
+    const data = await res.json();
+    el.textContent = 'Found ' + data.found + ' speaker' + (data.found === 1 ? '' : 's') + '.'
+      + (data.ok ? '' : ' (a scan step hit an error -- see the log)');
+  } catch (e) {
+    el.textContent = 'Scan failed: ' + e;
+  }
+  refresh();
+}
+async function setDefault(uid, isDefault){
+  await fetch('/api/default_speaker', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({uid: isDefault ? null : uid})});
+  refresh();
+}
+async function loadSeedIps(){
+  const res = await fetch('/api/sonos_seed');
+  const data = await res.json();
+  const el = document.getElementById('seedIps');
+  if (document.activeElement !== el) el.value = (data.seed_ips || []).join(', ');
+}
+async function saveSeedIps(){
+  const el = document.getElementById('seedResult');
+  el.textContent = 'Saving and looking for speakers...';
+  const raw = document.getElementById('seedIps').value;
+  const ips = raw.split(',').map(s => s.trim()).filter(Boolean);
+  const res = await fetch('/api/sonos_seed', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({seed_ips: ips})});
+  const data = await res.json();
+  if (data.error) {
+    el.textContent = 'Failed: ' + data.error;
+  } else {
+    el.textContent = 'Saved. Speakers found so far: ' + data.found
+      + (data.ok ? '' : ' (a scan step hit an error -- see the log)');
+  }
+  refresh();
 }
 async function toggle(uid, enabled){
   await fetch('/api/speaker/' + uid + '/enabled', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled})});
@@ -273,6 +389,7 @@ async function checkDonatePrompt(){
 }
 refresh();
 loadDevices();
+loadSeedIps();
 checkDonatePrompt();
 setInterval(refresh, 4000);
 </script>
@@ -333,6 +450,47 @@ def api_set_enabled(uid):
     base_url = f"http://{get_lan_ip()}:{config['http_port']}"
     speaker_mgr.set_enabled(uid, bool(data.get("enabled")), base_url)
     return jsonify({"ok": True})
+
+
+@app.route("/api/sonos_seed", methods=["GET", "POST"])
+def api_sonos_seed():
+    """Manual speaker IPs for when the speakers are on a subnet SSDP
+    multicast can't cross (e.g. an IoT VLAN). Saving triggers an
+    immediate rediscover so the user sees the result without waiting for
+    the 15s loop."""
+    if request.method == "GET":
+        return jsonify({"seed_ips": config.get("sonos_seed_ips", [])})
+    data = request.get_json(force=True)
+    ips = data.get("seed_ips", [])
+    if not isinstance(ips, list):
+        return jsonify({"ok": False, "error": "seed_ips must be a list"}), 400
+    config["sonos_seed_ips"] = [str(ip).strip() for ip in ips if str(ip).strip()]
+    save_config(config)
+    # rediscover() swallows its own errors and reports success/failure via
+    # its return value -- pass that straight through rather than always
+    # claiming ok
+    ok = speaker_mgr.rediscover()
+    return jsonify({"ok": ok, "found": len(speaker_mgr.list())})
+
+
+@app.route("/api/rescan", methods=["POST"])
+def api_rescan():
+    """One immediate discovery pass. Useful in auto mode (skip the wait
+    for the next 15s tick) and required in on_demand mode (the background
+    loop is idle until asked)."""
+    ok = speaker_mgr.request_rescan()
+    return jsonify({"ok": ok, "found": len(speaker_mgr.list())})
+
+
+@app.route("/api/default_speaker", methods=["POST"])
+def api_default_speaker():
+    """Pin the speaker PC2Sonos streams to immediately at launch (by its
+    current IP), or clear it with {"uid": null}."""
+    data = request.get_json(force=True)
+    uid = data.get("uid")
+    if speaker_mgr.set_default_speaker(uid):
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "no known IP for that speaker yet"}), 400
 
 
 @app.route("/api/speaker/<uid>/volume", methods=["POST"])
@@ -453,4 +611,9 @@ def stream_wav(uid):
 
 def run_web(host="0.0.0.0", port=None):
     port = port or config["http_port"]
+    if _dashboard_password() is None:
+        print(f"[web] dashboard has no password. To set one, put it on a "
+              f"single line in: {PASSWORD_PATH}")
+    else:
+        print("[web] dashboard is password-protected")
     app.run(host=host, port=port, threaded=True, use_reloader=False)

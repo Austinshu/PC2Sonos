@@ -20,6 +20,14 @@ from pathlib import Path
 APP_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "PC2Sonos"
 CONFIG_PATH = APP_DIR / "config.json"
 
+# Optional dashboard password. Kept in its own file, NOT in config.json,
+# on purpose: config.json is bundled verbatim into the diagnostics zip
+# (see diagnostics.export_diagnostics_zip) that users email to support --
+# a password in there would ride along in every submission. This file is
+# never read by diagnostics and is git-ignored. One line of plain text;
+# if the file is missing or empty the dashboard has no password.
+PASSWORD_PATH = APP_DIR / "dashboard_password.txt"
+
 # Every location this data has lived in before, oldest first -- checked in
 # order so an upgrade from ANY prior version carries the existing config
 # forward instead of silently starting over.
@@ -90,6 +98,42 @@ DEFAULT_CONFIG = {
     "sample_width": 2,  # bytes (16-bit PCM)
     "http_port": 5757,
     "speakers": {},  # uid -> {"enabled": bool, "volume": int}
+    # Normally the app finds speakers by SSDP multicast and these stay
+    # empty. They only matter when the Sonos speakers are on a different
+    # subnet / VLAN (e.g. an IoT VLAN) than this PC: routers don't forward
+    # SSDP multicast across VLANs, so automatic discovery finds nothing,
+    # but unicast control still works. Put ONE speaker's IP in
+    # sonos_seed_ips (give it a DHCP reservation) -- the app reaches it
+    # directly and learns the whole household from it. sonos_scan_cidrs
+    # is an alternative: a subnet in CIDR form (e.g. "10.0.20.0/24") that
+    # gets a unicast port-1400 sweep when no seed is reachable.
+    "sonos_seed_ips": [],
+    "sonos_scan_cidrs": [],
+    # Startup behavior -----------------------------------------------------
+    # default_speaker_ip: if set, PC2Sonos talks to this one speaker
+    # directly at launch instead of waiting for a discovery pass -- audio
+    # starts in ~1-2s instead of ~15-20s. Give that speaker a DHCP
+    # reservation. default_speaker_uid is filled in automatically the
+    # first time we reach it, and is then used to notice if DHCP later
+    # hands that IP to a different device (in which case the IP is
+    # ignored and normal discovery takes over). Blank = today's behavior.
+    "default_speaker_ip": "",
+    "default_speaker_uid": "",
+    # "auto" = keep re-scanning the network every 15s in the background.
+    # "on_demand" = once the default speaker is up, stop the background
+    # loop; only re-scan at startup and when the dashboard asks. Useful
+    # if you only ever stream to the one speaker.
+    "discovery_mode": "auto",
+    # When a brand-new speaker is discovered, start streaming to it right
+    # away (true, the default -- a fresh install lights up every speaker
+    # and you turn off the ones you don't want) or leave it off until you
+    # enable it in the dashboard (false). The default speaker is always
+    # enabled regardless.
+    "new_speakers_default_enabled": True,
+    # Flipped to true after the app's first successful launch. While
+    # false, the dashboard opens in the browser automatically; after
+    # that, use the tray icon (a startup toast still says it's running).
+    "has_launched_before": False,
     # Donation nag state -- see webapp.py's /api/donate/* routes. Once
     # donated is True, the weekly popup stops forever; last_donate_prompt_at
     # (unix seconds, 0 = never) just throttles it to once a week otherwise.

@@ -4,9 +4,18 @@ import threading
 import time
 from xml.sax.saxutils import escape
 
-from soco.discovery import discover
+import soco.config as soco_config
+from soco import SoCo
+from soco.discovery import discover, scan_network
 
 from config import config, save_config
+
+# SoCo's default is 20s. A speaker that's asleep or briefly off-network
+# then stalls every code path that touches it for 20s at a time -- and
+# with cross-subnet (unicast) discovery there's no multicast "who's
+# alive" to prune the dead ones, so this happens routinely. 4s is plenty
+# for a speaker that's actually there on the LAN.
+soco_config.REQUEST_TIMEOUT = 4.0
 
 
 def _track_metadata(title):
@@ -132,6 +141,11 @@ def _effective_zone(zone):
 class SpeakerManager:
     def __init__(self):
         self.speakers = {}   # uid -> soco.SoCo
+        self.names = {}      # uid -> str, cached at discovery so list()
+                             # never has to make a (possibly hanging)
+                             # network call just to render the dashboard
+        self.groups = {}     # uid -> [other member names], same reason:
+                             # refreshed from the background threads only
         self.streams = {}    # uid -> bool
         self._lock = threading.Lock()
         # uid -> monotonic time of our last automatic restart, so the
@@ -143,13 +157,171 @@ class SpeakerManager:
         self._boot_started = set()
         # speakers we've already logged a query failure for (log noise cap)
         self._warned = set()
+        # IPs of speakers we've successfully reached this run, seeded from
+        # config but grown as we discover more. Used as extra entry points
+        # for the unicast (cross-VLAN) discovery path so that if the one
+        # configured seed is down, any other speaker we've seen still gets
+        # us back to the whole household.
+        self._known_ips = set()
+        # set by the dashboard's "Rescan" button (and used to break the
+        # discovery loop out of its wait in on_demand mode)
+        self.rescan_requested = threading.Event()
+
+    def known_ips(self):
+        """A locked snapshot (sorted list) of the speaker IPs reached so
+        far this run. `_known_ips` is mutated from the discovery and
+        prime paths under `self._lock`; callers here run on other threads
+        (get_lan_ip on the watchdog thread, the diagnostics snapshot, the
+        next discovery pass), and iterating the set unlocked while it's
+        being added to raises 'Set changed size during iteration'."""
+        with self._lock:
+            return sorted(self._known_ips)
+
+    def _default_enabled_for(self, uid):
+        """Whether a newly-seen speaker should start out enabled. The
+        configured default speaker always is; everything else follows
+        new_speakers_default_enabled (true on a fresh install)."""
+        if uid and uid == config.get("default_speaker_uid"):
+            return True
+        return bool(config.get("new_speakers_default_enabled", True))
+
+    def prime_default_speaker(self):
+        """Reach config['default_speaker_ip'] directly and register it,
+        so the watchdog can boot-start it without waiting for a discovery
+        pass. Returns the uid on success, None otherwise (blank config,
+        speaker unreachable, or the IP now answers as a different device).
+
+        Safe to call repeatedly -- it's a no-op once the speaker is
+        already known."""
+        ip = str(config.get("default_speaker_ip") or "").strip()
+        if not ip:
+            return None
+        # A speaker waking from standby can take longer than the 4s
+        # REQUEST_TIMEOUT to answer its first request. Give it a few
+        # tries before falling back to normal discovery, otherwise a
+        # cold-boot default speaker silently misses the fast-start path.
+        zone = uid = None
+        for attempt in range(3):
+            try:
+                zone = SoCo(ip)
+                uid = zone.uid
+                break
+            except Exception as e:
+                if attempt == 2:
+                    print(f"[sonos] default speaker {ip} not reachable at "
+                          f"launch after {attempt + 1} tries: {e}")
+                    return None
+                time.sleep(2)
+
+        expected = str(config.get("default_speaker_uid") or "").strip()
+        if expected and expected != uid:
+            print(f"[sonos] {ip} is now {uid}, not the configured default "
+                  f"speaker {expected} -- ignoring it, letting discovery take over")
+            return None
+
+        name, groups = self._zone_meta(zone)  # network I/O -- keep it off the lock
+        with self._lock:
+            if not expected:
+                config["default_speaker_uid"] = uid
+            self._known_ips.add(ip)
+            if name:
+                self.names[uid] = name
+            if groups is not None:
+                self.groups[uid] = groups
+            self.speakers.setdefault(uid, zone)
+            config["speakers"].setdefault(
+                uid, {"enabled": True, "volume": 50})["enabled"] = True
+        save_config(config)
+        print(f"[sonos] default speaker ready at launch: {self.names.get(uid, uid)}")
+        return uid
+
+    def _discover_zones(self):
+        """The set of Sonos zones to track, from every source that applies
+        -- results are UNIONed, not taken from the first that returns
+        something (a SoCo set dedupes by uid).
+
+        - SSDP multicast (`discover`): on a flat network this alone is
+          complete -- and on a hit `soco.discovery.discover` already
+          returns the responder's full `visible_zones`, so a single
+          household that meshes across VLANs over SonosNet comes back
+          whole here too.
+        - Configured `sonos_seed_ips`: always walked when set. A mixed
+          setup -- some speakers on the LAN, a separate Sonos system on
+          an IoT VLAN reachable only by unicast -- would otherwise never
+          find the VLAN speakers once SSDP returns the LAN ones. Reaching
+          any one speaker yields its whole household via ZoneGroupTopology.
+        - `sonos_scan_cidrs`: a unicast subnet sweep. Last resort (it's
+          the expensive one) -- only when nothing else turned anything up.
+        - Previously-seen IPs (`known_ips()`): a recovery path, used only
+          when SSDP and any configured seeds all came back empty."""
+        zones = set()
+        try:
+            zones |= discover(timeout=5) or set()
+        except Exception as e:
+            print(f"[sonos] SSDP discovery error: {e}")
+
+        seed_ips = [str(s).strip() for s in (config.get("sonos_seed_ips") or [])
+                    if str(s).strip()]
+        scan_cidrs = [str(c).strip() for c in (config.get("sonos_scan_cidrs") or [])
+                      if str(c).strip()]
+
+        seeds = list(seed_ips)
+        if not zones and not seeds:
+            seeds = self.known_ips()
+        tried = set()
+        for ip in seeds:
+            if ip in tried:
+                continue
+            tried.add(ip)
+            try:
+                device = SoCo(ip)
+                # Warm the household's shared ZoneGroupState cache from
+                # THIS speaker, which we know we just reached -- otherwise
+                # the first .player_name access later might land on a
+                # speaker that's currently asleep and stall/return blank.
+                _ = device.player_name
+                zones |= (device.visible_zones or {device})
+            except Exception as e:
+                print(f"[sonos] seed speaker {ip} unreachable: {e}")
+
+        if scan_cidrs and not zones:
+            for cidr in scan_cidrs:
+                try:
+                    print(f"[sonos] nothing found yet; unicast-scanning {cidr}")
+                    zones |= (scan_network(networks_to_scan=[cidr],
+                                           multi_household=True) or set())
+                except Exception as e:
+                    print(f"[sonos] subnet scan of {cidr} failed: {e}")
+        return zones
 
     def rediscover(self):
+        """Run a discovery pass and merge the results. Returns True if it
+        completed, False if something went wrong along the way (the
+        dashboard's rescan routes surface this)."""
         try:
-            found = discover(timeout=5) or set()
+            found = self._discover_zones()
         except Exception as e:
             print(f"[sonos] discovery error: {e}")
-            return
+            return False
+
+        # Resolve each zone's name + group membership -- which is network
+        # I/O, up to a REQUEST_TIMEOUT per unreachable zone -- BEFORE
+        # taking self._lock. list() needs that same lock for every
+        # /api/speakers poll (every 4s), so doing this under it would let
+        # one asleep speaker stall the whole dashboard.
+        resolved = []  # (uid, zone, ip, name, groups)
+        for zone in found:
+            try:
+                uid = zone.uid
+            except Exception:
+                continue
+            try:
+                ip = zone.ip_address or ""
+            except Exception:
+                ip = ""
+            name, groups = self._zone_meta(zone)
+            resolved.append((uid, zone, ip, name, groups))
+
         # everything below used to run unguarded -- a single flaky zone
         # (a bad .volume read, a save_config hiccup) would raise straight
         # out of rediscover() and kill the discovery thread for the rest
@@ -157,8 +329,13 @@ class SpeakerManager:
         # obvious reason why. Guard it so that can't happen.
         try:
             with self._lock:
-                for zone in found:
-                    uid = zone.uid
+                for uid, zone, ip, name, groups in resolved:
+                    if ip:
+                        self._known_ips.add(ip)
+                    if name:
+                        self.names[uid] = name
+                    if groups is not None:
+                        self.groups[uid] = groups
                     if uid not in self.speakers:
                         self.speakers[uid] = zone
                         if uid not in config["speakers"]:
@@ -169,35 +346,69 @@ class SpeakerManager:
                             # the zone until someone actually touches the
                             # slider). 50% is a sane, unsurprising starting
                             # point for every newly-discovered speaker.
-                            config["speakers"][uid] = {"enabled": True, "volume": 50}
-                        print(f"[sonos] found: {zone.player_name}")
+                            config["speakers"][uid] = {
+                                "enabled": self._default_enabled_for(uid),
+                                "volume": 50,
+                            }
+                        print(f"[sonos] found: {self.names.get(uid, uid)}")
             save_config(config)
         except Exception as e:
             print(f"[sonos] discovery bookkeeping error: {e}")
+            return False
+        return True
+
+    def _zone_meta(self, zone):
+        """(display name, sorted list of visible group-member names) for a
+        zone. Makes network calls (player_name / group topology), so this
+        must run OUTSIDE self._lock and the caller merges the result in
+        afterwards. Returns (None, None) if the zone can't be reached;
+        (name, None) if the name resolved but the group didn't."""
+        try:
+            name = zone.player_name or None
+        except Exception:
+            return None, None
+        try:
+            grp = zone.group
+            others = []
+            for m in (grp.members if grp is not None else []):
+                # skip the zone itself and any bonded satellites/subs --
+                # those aren't separately-controllable "speakers", they'd
+                # just show up as a confusing "grouped with Sub, Sub"
+                if m.uid == zone.uid:
+                    continue
+                try:
+                    if not m.is_visible:
+                        continue
+                except Exception:
+                    continue
+                if m.player_name:
+                    others.append(m.player_name)
+            return name, sorted(others)
+        except Exception:
+            return name, None
 
     def list(self):
         with self._lock:
             out = []
             for uid, zone in self.speakers.items():
                 cfg = config["speakers"].get(uid, {"enabled": True, "volume": 50})
-                # surfaced so the dashboard can show "grouped with X, Y" --
-                # toggling any one of them actually affects the whole group
-                # (see _effective_zone), so the UI shouldn't imply otherwise
-                group_members = []
-                try:
-                    grp = zone.group
-                    if grp is not None and len(grp.members) > 1:
-                        group_members = sorted(
-                            m.player_name for m in grp.members if m.player_name != zone.player_name)
-                except Exception:
-                    pass
+                # Reads cached state ONLY -- nothing here makes a network
+                # call. The dashboard polls this every few seconds, and a
+                # single asleep/off-network speaker used to make the whole
+                # call hang, then 500, on SoCo's request timeout.
                 out.append({
                     "uid": uid,
-                    "name": zone.player_name,
+                    "name": self.names.get(uid, uid),
                     "enabled": cfg.get("enabled", True),
                     "volume": cfg.get("volume", 50),
                     "streaming": self.streams.get(uid, False),
-                    "grouped_with": group_members,
+                    "ip": getattr(zone, "ip_address", "") or "",
+                    "is_default": uid == config.get("default_speaker_uid"),
+                    # surfaced so the dashboard can show "grouped with X, Y"
+                    # -- toggling any one of them affects the whole group
+                    # (see _effective_zone), so the UI shouldn't imply
+                    # otherwise
+                    "grouped_with": self.groups.get(uid, []),
                 })
             return sorted(out, key=lambda s: s["name"])
 
@@ -211,6 +422,32 @@ class SpeakerManager:
             self.start_stream(uid, zone, base_url)
         else:
             self.stop_stream(uid, zone)
+
+    def set_default_speaker(self, uid):
+        """Pin (or, with a falsy uid, clear) the speaker PC2Sonos talks
+        to directly at launch. Returns True on success, False if the uid
+        isn't a speaker we currently know an IP for."""
+        with self._lock:
+            if not uid:
+                config["default_speaker_ip"] = ""
+                config["default_speaker_uid"] = ""
+                save_config(config)
+                return True
+            ip = getattr(self.speakers.get(uid), "ip_address", "") or ""
+            if not ip:
+                return False
+            config["default_speaker_ip"] = ip
+            config["default_speaker_uid"] = uid
+            config["speakers"].setdefault(
+                uid, {"enabled": True, "volume": 50})["enabled"] = True
+            save_config(config)
+        return True
+
+    def request_rescan(self):
+        """One immediate discovery pass, plus a nudge for the on_demand
+        loop (which is otherwise idle). Returns rediscover()'s status."""
+        self.rescan_requested.set()
+        return self.rediscover()
 
     def set_volume(self, uid, volume):
         zone = self.speakers.get(uid)
