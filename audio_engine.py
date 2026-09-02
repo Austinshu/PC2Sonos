@@ -147,16 +147,44 @@ def get_pyaudio():
     return _pa
 
 
-def get_lan_ip():
+def _source_ip_for(target):
+    """The local IP the OS would use as the source address to reach
+    `target`. No packet is actually sent -- connect() on a UDP socket
+    just does the route lookup."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = "127.0.0.1"
+        s.connect((target, 80))
+        return s.getsockname()[0]
     finally:
         s.close()
-    return ip
+
+
+def get_lan_ip():
+    """This PC's LAN IP -- the address Sonos speakers fetch the stream
+    from, so it has to be the one reachable FROM the speakers.
+
+    When the speakers sit on another subnet/VLAN and this PC has more
+    than one interface (Wi-Fi + Ethernet, a VPN, Docker, etc.), the
+    route to the internet and the route to the speakers can leave from
+    different NICs with different IPs. Ask the routing table which
+    source IP it would use to reach an actual speaker first, and only
+    fall back to the internet-facing IP when we don't know one yet."""
+    targets = list(config.get("sonos_seed_ips") or [])
+    try:
+        from sonos_ctl import speaker_mgr
+        targets += sorted(speaker_mgr._known_ips)
+    except Exception:
+        pass
+    targets.append("8.8.8.8")
+    for target in targets:
+        target = str(target).strip()
+        if not target:
+            continue
+        try:
+            return _source_ip_for(target)
+        except Exception:
+            continue
+    return "127.0.0.1"
 
 
 def capture_loop(stop_event):

@@ -156,9 +156,20 @@ def system_snapshot():
     except Exception as e:
         lines.append(f"  (couldn't list: {type(e).__name__}: {e})")
 
+    seed_ips = config.get("sonos_seed_ips") or []
+    scan_cidrs = config.get("sonos_scan_cidrs") or []
+    lines.append(f"Manual Sonos seed IPs (cross-VLAN): {seed_ips or '(none)'}")
+    if scan_cidrs:
+        lines.append(f"Manual Sonos scan subnets: {scan_cidrs}")
+
     lines.append("Sonos speakers PC2Sonos has found:")
     try:
         from sonos_ctl import speaker_mgr
+        try:
+            known = sorted(speaker_mgr._known_ips)
+            lines.append(f"  (speaker IPs reached this run: {known or '(none)'})")
+        except Exception:
+            pass
         speakers = speaker_mgr.list()
         if not speakers:
             lines.append("  (none found yet)")

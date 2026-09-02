@@ -4,9 +4,18 @@ import threading
 import time
 from xml.sax.saxutils import escape
 
-from soco.discovery import discover
+import soco.config as soco_config
+from soco import SoCo
+from soco.discovery import discover, scan_network
 
 from config import config, save_config
+
+# SoCo's default is 20s. A speaker that's asleep or briefly off-network
+# then stalls every code path that touches it for 20s at a time -- and
+# with cross-subnet (unicast) discovery there's no multicast "who's
+# alive" to prune the dead ones, so this happens routinely. 4s is plenty
+# for a speaker that's actually there on the LAN.
+soco_config.REQUEST_TIMEOUT = 4.0
 
 
 def _track_metadata(title):
@@ -132,6 +141,11 @@ def _effective_zone(zone):
 class SpeakerManager:
     def __init__(self):
         self.speakers = {}   # uid -> soco.SoCo
+        self.names = {}      # uid -> str, cached at discovery so list()
+                             # never has to make a (possibly hanging)
+                             # network call just to render the dashboard
+        self.groups = {}     # uid -> [other member names], same reason:
+                             # refreshed from the background threads only
         self.streams = {}    # uid -> bool
         self._lock = threading.Lock()
         # uid -> monotonic time of our last automatic restart, so the
@@ -143,10 +157,72 @@ class SpeakerManager:
         self._boot_started = set()
         # speakers we've already logged a query failure for (log noise cap)
         self._warned = set()
+        # IPs of speakers we've successfully reached this run, seeded from
+        # config but grown as we discover more. Used as extra entry points
+        # for the unicast (cross-VLAN) discovery path so that if the one
+        # configured seed is down, any other speaker we've seen still gets
+        # us back to the whole household.
+        self._known_ips = set()
+
+    def _discover_zones(self):
+        """Return the set of Sonos zones to track.
+
+        Normal path: SSDP multicast (`discover`). That's all that runs on
+        a flat network and it's fast.
+
+        Cross-subnet path: when the speakers are on a different VLAN (an
+        IoT VLAN is the common case), the router won't forward SSDP
+        multicast, so `discover` comes back empty even though unicast
+        control works fine. Fall back to talking to a known speaker IP
+        directly -- reaching ANY one speaker yields the entire household
+        via its ZoneGroupTopology -- and, failing that, to a unicast
+        sweep of an operator-supplied subnet."""
+        try:
+            found = discover(timeout=5) or set()
+        except Exception as e:
+            print(f"[sonos] SSDP discovery error: {e}")
+            found = set()
+        if found:
+            return found
+
+        seeds = list(config.get("sonos_seed_ips") or []) + sorted(self._known_ips)
+        zones = set()
+        tried = set()
+        for ip in seeds:
+            ip = str(ip).strip()
+            if not ip or ip in tried:
+                continue
+            tried.add(ip)
+            try:
+                device = SoCo(ip)
+                # Warm the household's shared ZoneGroupState cache from
+                # THIS speaker, which we know we just reached -- otherwise
+                # the first .player_name access later might land on a
+                # speaker that's currently asleep and stall/return blank.
+                # The reachable seed's topology already carries every
+                # zone's name.
+                _ = device.player_name
+                zones |= (device.visible_zones or {device})
+            except Exception as e:
+                print(f"[sonos] seed speaker {ip} unreachable: {e}")
+        if zones:
+            return zones
+
+        for cidr in config.get("sonos_scan_cidrs") or []:
+            cidr = str(cidr).strip()
+            if not cidr:
+                continue
+            try:
+                print(f"[sonos] SSDP found nothing; unicast-scanning {cidr}")
+                zones |= (scan_network(networks_to_scan=[cidr],
+                                       multi_household=True) or set())
+            except Exception as e:
+                print(f"[sonos] subnet scan of {cidr} failed: {e}")
+        return zones
 
     def rediscover(self):
         try:
-            found = discover(timeout=5) or set()
+            found = self._discover_zones()
         except Exception as e:
             print(f"[sonos] discovery error: {e}")
             return
@@ -159,6 +235,12 @@ class SpeakerManager:
             with self._lock:
                 for zone in found:
                     uid = zone.uid
+                    try:
+                        if zone.ip_address:
+                            self._known_ips.add(zone.ip_address)
+                    except Exception:
+                        pass
+                    self._refresh_zone_meta(uid, zone)
                     if uid not in self.speakers:
                         self.speakers[uid] = zone
                         if uid not in config["speakers"]:
@@ -170,34 +252,62 @@ class SpeakerManager:
                             # slider). 50% is a sane, unsurprising starting
                             # point for every newly-discovered speaker.
                             config["speakers"][uid] = {"enabled": True, "volume": 50}
-                        print(f"[sonos] found: {zone.player_name}")
+                        print(f"[sonos] found: {self.names.get(uid, uid)}")
             save_config(config)
         except Exception as e:
             print(f"[sonos] discovery bookkeeping error: {e}")
+
+    def _refresh_zone_meta(self, uid, zone):
+        """Pull this zone's display name and current group membership into
+        our own caches. Called only from the background discovery/watchdog
+        threads, never from list() -- those threads already tolerate a
+        slow or failed call, the dashboard poll does not."""
+        try:
+            name = zone.player_name
+            if name:
+                self.names[uid] = name
+        except Exception:
+            return
+        try:
+            grp = zone.group
+            others = []
+            for m in (grp.members if grp is not None else []):
+                # skip the zone itself and any bonded satellites/subs --
+                # those aren't separately-controllable "speakers", they'd
+                # just show up as a confusing "grouped with Sub, Sub"
+                if m.uid == uid:
+                    continue
+                try:
+                    if not m.is_visible:
+                        continue
+                except Exception:
+                    continue
+                if m.player_name:
+                    others.append(m.player_name)
+            self.groups[uid] = sorted(others)
+        except Exception:
+            pass
 
     def list(self):
         with self._lock:
             out = []
             for uid, zone in self.speakers.items():
                 cfg = config["speakers"].get(uid, {"enabled": True, "volume": 50})
-                # surfaced so the dashboard can show "grouped with X, Y" --
-                # toggling any one of them actually affects the whole group
-                # (see _effective_zone), so the UI shouldn't imply otherwise
-                group_members = []
-                try:
-                    grp = zone.group
-                    if grp is not None and len(grp.members) > 1:
-                        group_members = sorted(
-                            m.player_name for m in grp.members if m.player_name != zone.player_name)
-                except Exception:
-                    pass
+                # Reads cached state ONLY -- nothing here makes a network
+                # call. The dashboard polls this every few seconds, and a
+                # single asleep/off-network speaker used to make the whole
+                # call hang, then 500, on SoCo's request timeout.
                 out.append({
                     "uid": uid,
-                    "name": zone.player_name,
+                    "name": self.names.get(uid, uid),
                     "enabled": cfg.get("enabled", True),
                     "volume": cfg.get("volume", 50),
                     "streaming": self.streams.get(uid, False),
-                    "grouped_with": group_members,
+                    # surfaced so the dashboard can show "grouped with X, Y"
+                    # -- toggling any one of them affects the whole group
+                    # (see _effective_zone), so the UI shouldn't imply
+                    # otherwise
+                    "grouped_with": self.groups.get(uid, []),
                 })
             return sorted(out, key=lambda s: s["name"])
 

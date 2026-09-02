@@ -90,6 +90,17 @@ DEFAULT_CONFIG = {
     "sample_width": 2,  # bytes (16-bit PCM)
     "http_port": 5757,
     "speakers": {},  # uid -> {"enabled": bool, "volume": int}
+    # Normally the app finds speakers by SSDP multicast and these stay
+    # empty. They only matter when the Sonos speakers are on a different
+    # subnet / VLAN (e.g. an IoT VLAN) than this PC: routers don't forward
+    # SSDP multicast across VLANs, so automatic discovery finds nothing,
+    # but unicast control still works. Put ONE speaker's IP in
+    # sonos_seed_ips (give it a DHCP reservation) -- the app reaches it
+    # directly and learns the whole household from it. sonos_scan_cidrs
+    # is an alternative: a subnet in CIDR form (e.g. "10.0.20.0/24") that
+    # gets a unicast port-1400 sweep when no seed is reachable.
+    "sonos_seed_ips": [],
+    "sonos_scan_cidrs": [],
     # Donation nag state -- see webapp.py's /api/donate/* routes. Once
     # donated is True, the weekly popup stops forever; last_donate_prompt_at
     # (unix seconds, 0 = never) just throttles it to once a week otherwise.

@@ -110,6 +110,23 @@ DASHBOARD_HTML = """
 <div class="card">
   <label style="margin-bottom:0;">Sonos speakers</label>
   <div id="speakers"></div>
+  <details style="margin-top:12px; font-size:12px; color:#aaa;">
+    <summary style="cursor:pointer; color:#ccc;">Speakers not showing up? (different subnet / IoT VLAN)</summary>
+    <div style="margin-top:10px; line-height:1.5;">
+      Automatic discovery uses network multicast, which most routers don't
+      pass between VLANs. If your Sonos speakers are on a separate (e.g.
+      IoT) network, type <strong>one speaker's IP address</strong> below &mdash;
+      the app will reach it directly and find the rest from it. Give that
+      speaker a DHCP reservation so its IP doesn't change. Comma-separate
+      to list more than one.
+      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <input type="text" id="seedIps" placeholder="10.0.20.41, 10.0.20.42"
+               style="flex:1; min-width:180px; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+        <button onclick="saveSeedIps()">Save &amp; scan</button>
+      </div>
+      <div id="seedResult" style="margin-top:8px; color:#888;"></div>
+    </div>
+  </details>
 </div>
 
 <div class="card">
@@ -173,6 +190,24 @@ async function refresh(){
     `;
     el.appendChild(div);
   });
+}
+async function loadSeedIps(){
+  const res = await fetch('/api/sonos_seed');
+  const data = await res.json();
+  const el = document.getElementById('seedIps');
+  if (document.activeElement !== el) el.value = (data.seed_ips || []).join(', ');
+}
+async function saveSeedIps(){
+  const el = document.getElementById('seedResult');
+  el.textContent = 'Saving and looking for speakers...';
+  const raw = document.getElementById('seedIps').value;
+  const ips = raw.split(',').map(s => s.trim()).filter(Boolean);
+  const res = await fetch('/api/sonos_seed', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({seed_ips: ips})});
+  const data = await res.json();
+  el.textContent = data.ok
+    ? ('Saved. Speakers found so far: ' + data.found)
+    : ('Failed: ' + (data.error || 'unknown error'));
+  refresh();
 }
 async function toggle(uid, enabled){
   await fetch('/api/speaker/' + uid + '/enabled', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled})});
@@ -273,6 +308,7 @@ async function checkDonatePrompt(){
 }
 refresh();
 loadDevices();
+loadSeedIps();
 checkDonatePrompt();
 setInterval(refresh, 4000);
 </script>
@@ -333,6 +369,27 @@ def api_set_enabled(uid):
     base_url = f"http://{get_lan_ip()}:{config['http_port']}"
     speaker_mgr.set_enabled(uid, bool(data.get("enabled")), base_url)
     return jsonify({"ok": True})
+
+
+@app.route("/api/sonos_seed", methods=["GET", "POST"])
+def api_sonos_seed():
+    """Manual speaker IPs for when the speakers are on a subnet SSDP
+    multicast can't cross (e.g. an IoT VLAN). Saving triggers an
+    immediate rediscover so the user sees the result without waiting for
+    the 15s loop."""
+    if request.method == "GET":
+        return jsonify({"seed_ips": config.get("sonos_seed_ips", [])})
+    data = request.get_json(force=True)
+    ips = data.get("seed_ips", [])
+    if not isinstance(ips, list):
+        return jsonify({"ok": False, "error": "seed_ips must be a list"}), 400
+    config["sonos_seed_ips"] = [str(ip).strip() for ip in ips if str(ip).strip()]
+    save_config(config)
+    try:
+        speaker_mgr.rediscover()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
+    return jsonify({"ok": True, "found": len(speaker_mgr.list())})
 
 
 @app.route("/api/speaker/<uid>/volume", methods=["POST"])
