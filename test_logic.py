@@ -61,8 +61,23 @@ fake_pyaudio.PyAudio = FakePyAudio
 sys.modules["pyaudiowpatch"] = fake_pyaudio
 
 # ---- now safe to import our modules ----
-from config import DEFAULT_CONFIG, load_config, save_config, config  # noqa: E402
+from config import DEFAULT_CONFIG, CONFIG_PATH, load_config, save_config, config  # noqa: E402
 import audio_engine  # noqa: E402
+
+# This harness writes to the real config.json (the round-trip test below,
+# and every POST route that calls save_config). On a dev box that's the
+# live PC2Sonos config -- snapshot it now and put it back on exit no
+# matter how the run ends.
+import atexit  # noqa: E402
+_ORIG_CONFIG_BYTES = CONFIG_PATH.read_bytes() if CONFIG_PATH.exists() else None
+
+
+@atexit.register
+def _restore_real_config():
+    if _ORIG_CONFIG_BYTES is None:
+        CONFIG_PATH.unlink(missing_ok=True)
+    else:
+        CONFIG_PATH.write_bytes(_ORIG_CONFIG_BYTES)
 
 print("[test] config round-trip...")
 cfg = dict(DEFAULT_CONFIG)
