@@ -47,6 +47,32 @@ After that, it's fully automatic: log into Windows, PC2Sonos starts
 quietly in the system tray, and every Sonos speaker you enabled starts
 receiving audio.
 
+### Optional: password-protect the dashboard
+
+By default the dashboard has no password -- PC2Sonos assumes it's running
+on a network you control.
+
+To require one, create a file named `dashboard_password.txt` in the
+PC2Sonos data folder -- the same folder that holds `config.json` and
+`pc2sonos.log` (its full path is printed at the top of `pc2sonos.log`
+every time the app starts; on a normal install it's
+`%ProgramData%\PC2Sonos`). Put the password on the first line and save.
+
+It takes effect on the next page load -- the browser will ask for a
+username (anything works) and the password. Delete the file to remove the
+password again.
+
+What this is and isn't: it's a low-effort gate to keep other people on
+the same LAN (housemates, guests on the wifi) from opening the dashboard
+and toggling your speakers or changing settings. It is **not** strong
+security. The password sits in a plain text file, it's sent over plain
+HTTP (base64-encoded, not encrypted -- anyone who can capture traffic on
+your network can read it), and the audio stream endpoint stays open
+because Sonos speakers can't authenticate. Don't reuse a password you
+care about, and don't rely on this if the dashboard is somehow reachable
+from outside your home network. The file is deliberately kept out of the
+diagnostics export so it isn't shared by accident.
+
 ## Running from source (for development)
 
 The steps above are what an end user needs -- nothing else. This section

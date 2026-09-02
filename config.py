@@ -20,6 +20,14 @@ from pathlib import Path
 APP_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "PC2Sonos"
 CONFIG_PATH = APP_DIR / "config.json"
 
+# Optional dashboard password. Kept in its own file, NOT in config.json,
+# on purpose: config.json is bundled verbatim into the diagnostics zip
+# (see diagnostics.export_diagnostics_zip) that users email to support --
+# a password in there would ride along in every submission. This file is
+# never read by diagnostics and is git-ignored. One line of plain text;
+# if the file is missing or empty the dashboard has no password.
+PASSWORD_PATH = APP_DIR / "dashboard_password.txt"
+
 # Every location this data has lived in before, oldest first -- checked in
 # order so an upgrade from ANY prior version carries the existing config
 # forward instead of silently starting over.

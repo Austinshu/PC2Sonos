@@ -2,16 +2,64 @@
 
 import io
 import queue
+import secrets
 import struct
 import time
 
 from flask import Flask, Response, jsonify, render_template_string, request
 
 from audio_engine import CHUNK, broadcaster, list_output_devices, restart_render, get_current_render_device_name, get_lan_ip
-from config import config, save_config
+from config import config, save_config, PASSWORD_PATH
 from sonos_ctl import speaker_mgr
 
 app = Flask(__name__)
+
+# (password_text, mtime_ns) cache so we re-read dashboard_password.txt only
+# when it actually changes -- create/edit the file and the next request
+# picks it up, no restart.
+_pw_cache = (None, None)
+
+
+def _dashboard_password():
+    """The current dashboard password, or None if the dashboard is open.
+
+    Open (None) when PASSWORD_PATH doesn't exist or is blank -- this is
+    the default: the app works on a trusted LAN with no setup, and
+    someone who wants a password just drops one line of text in that
+    file (path logged at startup)."""
+    global _pw_cache
+    try:
+        mtime = PASSWORD_PATH.stat().st_mtime_ns
+    except OSError:
+        _pw_cache = (None, None)
+        return None
+    if mtime != _pw_cache[1]:
+        try:
+            _pw_cache = (PASSWORD_PATH.read_text(encoding="utf-8").strip() or None, mtime)
+        except OSError:
+            _pw_cache = (None, None)
+    return _pw_cache[0]
+
+
+@app.before_request
+def require_auth():
+    # The stream endpoint is fetched directly by Sonos speakers, which
+    # can't respond to an HTTP auth challenge -- leave it open, same as
+    # every other PC->Sonos streamer. Everything else (the dashboard +
+    # /api/*) requires the password IF one has been configured.
+    if request.path.startswith("/stream/"):
+        return
+    password = _dashboard_password()
+    if password is None:
+        return
+    auth = request.authorization
+    given = auth.password if auth and auth.password is not None else ""
+    # compare as bytes -- str compare_digest raises on non-ASCII input
+    if not secrets.compare_digest(given.encode("utf-8"), password.encode("utf-8")):
+        return Response(
+            "Authentication required", 401,
+            {"WWW-Authenticate": 'Basic realm="PC2Sonos"'}
+        )
 
 # PC2Sonos is free. This is a "pay what you want" link for anyone who
 # finds it useful and wants to support development -- nothing in the app
@@ -510,4 +558,9 @@ def stream_wav(uid):
 
 def run_web(host="0.0.0.0", port=None):
     port = port or config["http_port"]
+    if _dashboard_password() is None:
+        print(f"[web] dashboard has no password. To set one, put it on a "
+              f"single line in: {PASSWORD_PATH}")
+    else:
+        print("[web] dashboard is password-protected")
     app.run(host=host, port=port, threaded=True, use_reloader=False)

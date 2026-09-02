@@ -181,6 +181,12 @@ def system_snapshot():
 
     lines.append(f"Config: local_delay_ms={config.get('local_delay_ms')} "
                  f"http_port={config.get('http_port')}")
+    try:
+        from config import PASSWORD_PATH
+        # report only whether it's set, never the value
+        lines.append(f"Dashboard password: {'set' if PASSWORD_PATH.exists() else 'not set (dashboard open)'}")
+    except Exception:
+        pass
     return "\n".join(lines)
 
 

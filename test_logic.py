@@ -163,6 +163,35 @@ wav = webapp.wav_header(44100, 2, 2)
 assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE" and b"fmt " in wav and b"data" in wav
 print("  wav_header() OK")
 
+# dashboard password: open by default, enforced once PASSWORD_PATH exists,
+# stream endpoint always open (Sonos can't do HTTP auth)
+def _test_dashboard_password():
+    import base64
+    from config import PASSWORD_PATH
+    if PASSWORD_PATH.exists():
+        print(f"  dashboard password test SKIPPED ({PASSWORD_PATH} exists -- won't touch a real one)")
+        return
+    assert webapp._dashboard_password() is None
+    assert client.get("/").status_code == 200, "open when no password file"
+    PASSWORD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PASSWORD_PATH.write_text("  s3cret \n", encoding="utf-8")  # whitespace stripped
+    try:
+        assert webapp._dashboard_password() == "s3cret"
+        assert client.get("/").status_code == 401, "protected once the file exists"
+        assert client.get("/api/speakers").status_code == 401
+        hdr = lambda u, p: {"Authorization": "Basic " + base64.b64encode(f"{u}:{p}".encode()).decode()}
+        assert client.get("/", headers=hdr("x", "s3cret")).status_code == 200
+        assert client.get("/", headers=hdr("x", "nope")).status_code == 401
+        assert client.get("/stream/RINCON_X.wav", headers=hdr("x", "nope")).status_code != 401, \
+            "stream endpoint must stay open for Sonos"
+    finally:
+        PASSWORD_PATH.unlink()
+    assert webapp._dashboard_password() is None, "removing the file re-opens the dashboard"
+    print("  dashboard password OK (open by default, enforced when set)")
+
+
+_test_dashboard_password()
+
 print("[test] watchdog restarts dropped streams, respects other sources + cooldown...")
 import sonos_ctl  # noqa: E402
 
