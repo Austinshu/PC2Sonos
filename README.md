@@ -30,28 +30,44 @@ idea as the "audio delay" / lip-sync offset setting on an AV receiver.
 
 ## One-time setup
 
-1. **Install VB-Audio Virtual Cable** (free): https://vb-audio.com/Cable/
-   This creates a virtual audio device Windows apps can output to, which
-   PC2Sonos then reads from -- it's what makes delaying your local
-   speakers possible at all (Windows won't let software "un-play" audio
-   that's already reached a real speaker).
-2. Set your Windows default **playback** device to **"CABLE Input (VB-Audio
-   Virtual Cable)"** (Settings > System > Sound > Output).
-3. Run `install.ps1` from this folder (right-click > Run with PowerShell,
-   or open PowerShell here and run `./install.ps1`). It installs the
-   Python dependencies, creates a Windows Startup shortcut, and launches
-   the app.
-4. Open the dashboard: http://127.0.0.1:5757
+1. Download `PC2Sonos-Setup.exe` from the
+   [latest release](https://github.com/Austinshu/PC2Sonos/releases/latest)
+   and run it. It installs VB-Audio Virtual Cable, sets it as your
+   default playback device, adds the Windows Firewall rules Sonos needs
+   to reach the stream, registers PC2Sonos in Settings > Apps so it can
+   be uninstalled the normal way, and starts the app -- one click,
+   nothing to configure by hand.
+2. Open the dashboard: http://127.0.0.1:5757
    - Enable the Sonos speakers you want.
-   - Play something on your PC.
-   - Drag the "local sync delay" slider up from 0 until your PC speakers
-     and Sonos land together with no echo (typically somewhere around
-     1000-2000ms, but it depends on your network and speakers -- dial it
-     in by ear).
+   - Play something on your PC, then click **Auto** to measure the sync
+     delay automatically (or drag the slider by ear until your PC
+     speakers and Sonos land together with no echo).
 
 After that, it's fully automatic: log into Windows, PC2Sonos starts
 quietly in the system tray, and every Sonos speaker you enabled starts
 receiving audio.
+
+## Running from source (for development)
+
+The steps above are what an end user needs -- nothing else. This section
+is only for building/modifying PC2Sonos itself, where you don't get the
+installer's automation for free:
+
+1. Install VB-Audio Virtual Cable by hand (free): https://vb-audio.com/Cable/
+   This creates a virtual audio device Windows apps can output to, which
+   PC2Sonos then reads from -- it's what makes delaying your local
+   speakers possible at all (Windows won't let software "un-play" audio
+   that's already reached a real speaker). `PC2Sonos-Setup.exe` installs
+   this for you; running from source, you have to do it yourself.
+2. Set your Windows default **playback** device to **"CABLE Input (VB-Audio
+   Virtual Cable)"** (Settings > System > Sound > Output).
+3. Run `install.ps1` from this folder (right-click > Run with PowerShell,
+   or open PowerShell here and run `./install.ps1`). Needs Python 3.10+
+   on PATH -- it installs the Python dependencies, builds `PC2Sonos.exe`,
+   creates a Windows Startup shortcut, and launches it.
+
+To build the actual one-download installer (`PC2Sonos-Setup.exe`,
+bundling VB-CABLE and the uninstaller), see `build_installer.ps1`.
 
 ## Support
 
@@ -87,7 +103,16 @@ is shared with tools like SWYH.
 - `audio_engine.py` -- WASAPI capture from the virtual cable, delayed
   render to your real speakers, fan-out to Sonos streams
 - `sonos_ctl.py` -- Sonos discovery/control via SoCo
+- `calibration.py` -- automatic sync-delay measurement (silent, from
+  Sonos's own playback clock, and an optional test-tone + microphone method)
 - `webapp.py` -- Flask dashboard + the WAV endpoints Sonos speakers pull
   audio from
 - `tray_icon.py` -- system tray icon (Open Dashboard / Quit)
-- `install.ps1` -- one-time setup script
+- `config.py` -- settings load/save (`Documents\PC2Sonos\config.json`)
+- `diagnostics.py` -- crash logging + the dashboard's "Export Diagnostics" bundle
+- `windows_audio.py` / `windows_firewall.py` -- Windows-specific helpers
+  (default output device, firewall rules)
+- `install.ps1` -- source-based dev setup script (see "Running from source" above)
+- `setup_installer.py` / `uninstall.py` -- source for the packaged
+  `PC2Sonos-Setup.exe` / `PC2Sonos-Uninstall.exe`
+- `build_installer.ps1` -- builds the one-download `PC2Sonos-Setup.exe`
