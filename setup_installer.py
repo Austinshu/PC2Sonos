@@ -349,10 +349,10 @@ def main():
     say("Done! Your dashboard: " + DASHBOARD)
     say("Sonos speakers on your network are found automatically;")
     say("use the dashboard to tune the sync delay to your room.")
-    try:
-        os.startfile(DASHBOARD)  # noqa
-    except Exception:
-        pass
+    # not opening the dashboard here ourselves -- PC2Sonos.exe (just
+    # launched above) now opens it on its own a moment after it starts,
+    # on every launch, not just this first one. Doing it here too would
+    # just open two browser tabs to the same page.
     say("")
     input("Press Enter to close this window...")
     return 0

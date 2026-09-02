@@ -145,6 +145,24 @@ def main():
     except Exception as e:
         print(f"[tray] system tray icon not available: {e}")
 
+    def open_dashboard_once_ready():
+        # webapp.run_web() below blocks until the process exits, so this
+        # has to happen on its own thread -- and needs a moment first so
+        # the Flask server actually has a socket open to browse to.
+        # Previously the dashboard only opened automatically on the very
+        # first run (from setup_installer.py) or if someone found the
+        # tray icon's "Open Dashboard" item -- every other launch (every
+        # normal Windows login, via the Startup shortcut) started the app
+        # with no visible sign it had, unless you went looking for it.
+        time.sleep(1.5)
+        try:
+            import webbrowser
+            webbrowser.open(f"http://127.0.0.1:{config['http_port']}")
+        except Exception as e:
+            print(f"[web] couldn't auto-open the dashboard: {e}")
+
+    threading.Thread(target=open_dashboard_once_ready, daemon=True).start()
+
     print(f"[web] dashboard: http://127.0.0.1:{config['http_port']}")
     webapp.run_web()
 
