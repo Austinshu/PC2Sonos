@@ -91,9 +91,9 @@ DASHBOARD_HTML = """
     <button onclick="autoCalibrate('silent')" style="background:#2b6cb0; color:#fff;">Auto</button>
   </div>
   <div id="calibResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
-  <div style="margin-top:10px; font-size:12px;">
-    <a href="#" onclick="toggleMicHelp(); return false;" style="color:#2b6cb0;">Prefer a test tone + microphone instead?</a>
-    <div id="micHelp" style="display:none; margin-top:8px; color:#aaa; line-height:1.5;">
+  <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a; font-size:12px;">
+    <div style="color:#ccc; font-weight:600; margin-bottom:6px;">Prefer a test tone + microphone instead?</div>
+    <div style="color:#aaa; line-height:1.5;">
       Put the microphone (built-in laptop mic, or any USB/headset mic) somewhere it
       can clearly hear <strong>both</strong> your PC speakers and the Sonos speaker(s)
       you're syncing to at once &mdash; roughly the midpoint between them, not sitting
@@ -218,10 +218,6 @@ async function autoCalibrate(method){
       }
     }
   }, 700);
-}
-function toggleMicHelp(){
-  const el = document.getElementById('micHelp');
-  el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 async function loadDevices(){
   const res = await fetch('/api/devices');
