@@ -167,6 +167,16 @@ class SpeakerManager:
         # discovery loop out of its wait in on_demand mode)
         self.rescan_requested = threading.Event()
 
+    def known_ips(self):
+        """A locked snapshot (sorted list) of the speaker IPs reached so
+        far this run. `_known_ips` is mutated from the discovery and
+        prime paths under `self._lock`; callers here run on other threads
+        (get_lan_ip on the watchdog thread, the diagnostics snapshot, the
+        next discovery pass), and iterating the set unlocked while it's
+        being added to raises 'Set changed size during iteration'."""
+        with self._lock:
+            return sorted(self._known_ips)
+
     def _default_enabled_for(self, uid):
         """Whether a newly-seen speaker should start out enabled. The
         configured default speaker always is; everything else follows
@@ -233,7 +243,7 @@ class SpeakerManager:
         if found:
             return found
 
-        seeds = list(config.get("sonos_seed_ips") or []) + sorted(self._known_ips)
+        seeds = list(config.get("sonos_seed_ips") or []) + self.known_ips()
         zones = set()
         tried = set()
         for ip in seeds:

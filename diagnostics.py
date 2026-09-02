@@ -166,7 +166,7 @@ def system_snapshot():
     try:
         from sonos_ctl import speaker_mgr
         try:
-            known = sorted(speaker_mgr._known_ips)
+            known = speaker_mgr.known_ips()
             lines.append(f"  (speaker IPs reached this run: {known or '(none)'})")
         except Exception:
             pass

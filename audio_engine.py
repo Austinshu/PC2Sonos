@@ -175,7 +175,7 @@ def get_lan_ip():
     targets += list(config.get("sonos_seed_ips") or [])
     try:
         from sonos_ctl import speaker_mgr
-        targets += sorted(speaker_mgr._known_ips)
+        targets += speaker_mgr.known_ips()
     except Exception:
         pass
     targets.append("8.8.8.8")
