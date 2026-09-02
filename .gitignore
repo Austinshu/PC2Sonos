@@ -17,3 +17,8 @@ installer-build-log.txt
 # Dashboard password -- lives in %ProgramData%\PC2Sonos at runtime, never
 # in the repo; ignored here too so a dev-time copy can't be committed
 dashboard_password.txt
+
+# Local Python virtual environments
+venv/
+.venv/
+env/
