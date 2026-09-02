@@ -29,6 +29,22 @@ _OLD_APP_DIRS = [
 ]
 
 
+# Every build before this one shipped with local_delay_ms defaulting to
+# this -- so a config carried forward from an old install that never had
+# its delay touched would still say 1500, even though a genuinely fresh
+# install now starts at 0. That's not a real, deliberately-chosen value,
+# just a stale old default that happened to get written to disk the
+# first time the app ran -- migration below resets exactly this one
+# value (and only this exact value) back to the new default, while still
+# preserving anything the person actually did configure: which speakers
+# are enabled, per-speaker volumes, or a delay they set to anything else,
+# including one that happens to also be 1500 by deliberate choice being
+# indistinguishable from the stale case -- an acceptable tradeoff since
+# the whole point of the new default is that unedited installs should
+# land on 0, not on a number nobody chose.
+_STALE_OLD_DEFAULT_DELAY_MS = 1500
+
+
 def _migrate_from_old_locations():
     """One-time migration for anyone upgrading from a version of PC2Sonos
     that stored config.json in Documents (OneDrive-synced, if Documents
@@ -44,6 +60,12 @@ def _migrate_from_old_locations():
             try:
                 APP_DIR.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(old_config, CONFIG_PATH)
+                with open(CONFIG_PATH, "r") as f:
+                    migrated = json.load(f)
+                if migrated.get("local_delay_ms") == _STALE_OLD_DEFAULT_DELAY_MS:
+                    migrated["local_delay_ms"] = 0
+                    with open(CONFIG_PATH, "w") as f:
+                        json.dump(migrated, f, indent=2)
             except Exception:
                 pass
             return

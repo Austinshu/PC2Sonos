@@ -24,6 +24,7 @@ No Python, no pip, no manual audio settings on the target machine.
 """
 
 import ctypes
+import json
 import os
 import shutil
 import subprocess
@@ -151,6 +152,21 @@ def migrate_and_cleanup_old_dirs():
             old_config = old_dir / "config.json"
             if old_config.exists() and not new_config.exists():
                 shutil.copy2(old_config, new_config)
+                # every build before this one defaulted local_delay_ms to
+                # 1500 -- an install that never had its delay touched
+                # would carry that stale number forward as if it were a
+                # deliberate choice. Reset exactly that value back to the
+                # new default (0) so an upgrade from any prior version
+                # actually lands where a fresh install now does.
+                try:
+                    with open(new_config, "r") as f:
+                        migrated = json.load(f)
+                    if migrated.get("local_delay_ms") == 1500:
+                        migrated["local_delay_ms"] = 0
+                        with open(new_config, "w") as f:
+                            json.dump(migrated, f, indent=2)
+                except Exception:
+                    pass
                 say("  carried your existing settings over from the old install location")
             shutil.rmtree(old_dir, ignore_errors=True)
             say(f"  removed old install left over at {old_dir}")
