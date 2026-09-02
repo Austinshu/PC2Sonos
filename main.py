@@ -32,7 +32,7 @@ def _setup_logging():
     status messages -- and so there's somewhere to look if something else
     goes wrong."""
     if sys.stdout is None or getattr(sys, "frozen", False):
-        log_dir = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / "PC2Sonos"
+        log_dir = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "PC2Sonos"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "pc2sonos.log"
         try:

@@ -2,8 +2,9 @@
 PC2Sonos-Uninstall.exe -- removes everything the installer added.
 
 Built the same way as setup_installer.py (PyInstaller --onefile
---uac-admin) and placed at Documents\\PC2Sonos\\app alongside
-PC2Sonos.exe itself, then registered in Windows' "Apps & Features" so
+--uac-admin) and placed alongside PC2Sonos.exe itself (wherever that was
+installed -- Program Files by default, or a custom folder if the user
+picked one), then registered in Windows' "Apps & Features" so
 uninstalling is a normal Settings > Apps > Uninstall click, not a set
 of manual instructions someone has to be handed.
 
@@ -22,7 +23,10 @@ Removes:
   5. The Startup + Desktop shortcuts
   6. The leftover HKCU\\Software\\PC2Sonos registry key, if present
      (used by an earlier trial system; harmless but no longer used)
-  7. Documents\\PC2Sonos entirely (app files, config, logs)
+  7. The app binaries (wherever installed, per the registry's
+     InstallLocation), %ProgramData%\\PC2Sonos (config, logs), and any
+     leftovers from older versions' install locations (Documents,
+     %LOCALAPPDATA%)
   8. The Windows "Apps & Features" entry for PC2Sonos itself
 
 Does NOT touch: your Sonos speakers (there's nothing on them to
@@ -42,6 +46,18 @@ from pathlib import Path
 APP_NAME = "PC2Sonos"
 UNINSTALL_KEY = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{APP_NAME}"
 
+# Config/log location -- see config.py and setup_installer.py's DATA_DIR
+# for why this is separate from wherever the app binaries live.
+DATA_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / APP_NAME
+
+# Everywhere the app (binaries + data, all co-located back then) lived in
+# older versions, so upgrading-then-uninstalling or uninstalling straight
+# from an old version still cleans up fully instead of leaving orphans.
+_OLD_DATA_DIRS = [
+    Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / APP_NAME,
+    Path(os.environ.get("LOCALAPPDATA", "")) / APP_NAME,
+]
+
 # Virtual/software output devices that are never "the real speakers to
 # fall back to" -- same blocklist audio_engine.py uses for auto-pick,
 # duplicated here (rather than imported) so this uninstaller doesn't
@@ -57,7 +73,19 @@ def say(msg):
 
 
 def install_dir():
-    return Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / APP_NAME
+    """Where the app binaries actually are. Read from the registry entry
+    the installer wrote (InstallLocation), since the user may have picked
+    a custom folder rather than the Program Files default -- falls back
+    to that default if the key's missing (a partial/broken install), so
+    there's always something to try."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, UNINSTALL_KEY) as key:
+            loc, _ = winreg.QueryValueEx(key, "InstallLocation")
+            if loc:
+                return Path(loc)
+    except Exception:
+        pass
+    return Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / APP_NAME
 
 
 def stop_running_app():
@@ -188,24 +216,34 @@ def remove_registry_leftovers():
         say(f"  couldn't remove registry leftovers: {e}")
 
 
-def remove_old_appdata_leftovers():
-    """Every build before this one installed to %LOCALAPPDATA%\\PC2Sonos
-    instead of Documents. Not the exe's own running directory, so unlike
-    remove_app_files() below this can just be deleted immediately, no
-    detached-cmd dance needed."""
-    old_dir = Path(os.environ.get("LOCALAPPDATA", "")) / APP_NAME
-    if not old_dir.exists():
+def remove_old_data_dirs():
+    """Older versions kept binaries and config.json together, first in
+    %LOCALAPPDATA%\\PC2Sonos, then Documents\\PC2Sonos. Neither is the
+    exe's own running directory, so unlike remove_app_files() below these
+    can just be deleted immediately, no detached-cmd dance needed."""
+    for old_dir in _OLD_DATA_DIRS:
+        if not old_dir.exists():
+            continue
+        try:
+            shutil.rmtree(old_dir, ignore_errors=True)
+            say(f"  removed old install left over at {old_dir}")
+        except Exception as e:
+            say(f"  couldn't remove {old_dir}: {e}")
+
+
+def remove_data_dir():
+    if not DATA_DIR.exists():
         return
     try:
-        shutil.rmtree(old_dir, ignore_errors=True)
-        say(f"  removed old install left over at {old_dir}")
+        shutil.rmtree(DATA_DIR, ignore_errors=True)
+        say(f"  removed {DATA_DIR}")
     except Exception as e:
-        say(f"  couldn't remove {old_dir}: {e}")
+        say(f"  couldn't remove {DATA_DIR}: {e}")
 
 
-def remove_app_files():
-    remove_old_appdata_leftovers()
-    d = install_dir()
+def remove_app_files(d):
+    remove_old_data_dirs()
+    remove_data_dir()
     if not d.exists():
         return
     # can't delete the running exe's own directory while it's the
@@ -244,6 +282,12 @@ def main():
         input("Press Enter to exit...")
         return 1
 
+    # resolved up front, before remove_uninstall_registration() below
+    # deletes the very registry key install_dir() reads InstallLocation
+    # from -- otherwise a custom (non-default) install location would be
+    # lost by the time remove_app_files() needs it
+    app_dir = install_dir()
+
     say("[1/7] Stopping PC2Sonos...")
     stop_running_app()
 
@@ -264,7 +308,7 @@ def main():
     remove_uninstall_registration()
 
     say("[7/7] Removing app files...")
-    remove_app_files()
+    remove_app_files(app_dir)
 
     say("")
     say("Done. PC2Sonos has been removed.")

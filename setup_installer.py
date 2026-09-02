@@ -9,9 +9,9 @@ bundled inside it (see build_installer.ps1):
                                   Burel, donationware -- vb-audio.com)
 
 What one double-click does on a fresh x64 PC:
-    1. installs PC2Sonos.exe (+ PC2Sonos-Uninstall.exe) to
-       Documents\\PC2Sonos\\app (visible, easy to find -- not hidden
-       away in AppData)
+    1. asks where to install (defaults to Program Files\\PC2Sonos -- a
+       normal, non-cloud-synced location, same as any other Windows app)
+       and installs PC2Sonos.exe (+ PC2Sonos-Uninstall.exe) there
     2. installs the VB-CABLE virtual audio driver if it's missing
        (silent; falls back to VB-Audio's visible installer window)
     3. sets "CABLE Input" as the Windows default output device
@@ -36,6 +36,26 @@ APP_NAME = "PC2Sonos"
 DASHBOARD = "http://127.0.0.1:5757"
 UNINSTALL_KEY = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{APP_NAME}"
 
+# The small, frequently-rewritten config.json/log -- kept out of wherever
+# the app binaries end up (Program Files by default, or wherever the user
+# picks) because that location may not be writable by the app once it's
+# running unelevated as a normal user. ProgramData always is, and -- the
+# whole reason this exists as a separate constant -- it's never touched by
+# OneDrive's Known Folder Move the way Documents/Desktop/Pictures can be.
+DATA_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / APP_NAME
+
+# Every location the app (binaries) and its data have lived in across
+# versions, oldest first, so an upgrade from any of them can be found and
+# cleaned up/migrated instead of left behind as dead weight.
+_OLD_DIRS = [
+    Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / APP_NAME,
+    Path(os.environ.get("LOCALAPPDATA", "")) / APP_NAME,
+]
+
+# Well-known SID for the builtin "Users" group -- locale-independent
+# (unlike the string "Users", which is only correct on English Windows).
+_USERS_SID = "*S-1-5-32-545"
+
 
 def say(msg):
     print(msg, flush=True)
@@ -46,10 +66,39 @@ def payload_dir():
     return Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "payload"
 
 
-def install_dir():
-    # Documents, not AppData: visible in Explorer by default, so someone
-    # who wants to find/back up/move the app folder actually can.
-    return Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / APP_NAME / "app"
+def default_install_dir():
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    return Path(program_files) / APP_NAME
+
+
+def prompt_install_dir():
+    """Asks where to put the app binaries, defaulting to Program Files.
+    Falls back to the default silently if a folder picker can't be shown
+    (no display, tkinter unavailable) or the user cancels -- this should
+    never be the thing that blocks an otherwise-working install."""
+    default = default_install_dir()
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        chosen = filedialog.askdirectory(
+            title="Choose where to install PC2Sonos (Cancel for the default)",
+            initialdir=str(default.parent),
+            mustexist=False,
+        )
+        root.destroy()
+        if chosen:
+            # a folder picker returns the SELECTED folder -- put our own
+            # named subfolder inside it, same as picking "C:\Program
+            # Files" would otherwise dump loose files straight into it
+            chosen_path = Path(chosen)
+            return chosen_path if chosen_path.name == APP_NAME else chosen_path / APP_NAME
+    except Exception as e:
+        say(f"  (couldn't show a folder picker: {e}; using the default)")
+    return default
 
 
 def cable_present():
@@ -67,39 +116,59 @@ def stop_running_app():
         capture_output=True)
 
 
-def cleanup_old_appdata_install():
-    """Every build before this one installed to %LOCALAPPDATA%\\PC2Sonos.
-    Carry the old config.json (tuned delay, which speakers were enabled,
-    per-speaker volume) over to the new Documents location BEFORE wiping
-    the old folder -- config.py's own migration only runs once PC2Sonos.exe
-    itself starts, which happens after this, so doing it here too means an
-    upgrade never has a moment where the old settings exist nowhere."""
-    old_dir = Path(os.environ.get("LOCALAPPDATA", "")) / APP_NAME
-    if not old_dir.exists():
-        return
+def setup_data_dir():
+    """Creates %ProgramData%\\PC2Sonos and grants standard users write
+    access to it -- ProgramData is normally writable by any user for
+    files/folders they create themselves, but that first mkdir happens
+    here, while we're elevated, so explicitly granting access removes any
+    dependence on the machine's particular default ACLs. Without this,
+    the app could install fine and then fail to save its own config the
+    first time someone drags the delay slider, as a standard (non-admin)
+    user."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        old_config = old_dir / "config.json"
-        new_config = install_dir().parent / "config.json"
-        if old_config.exists() and not new_config.exists():
-            new_config.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(old_config, new_config)
-            say("  carried your existing settings over from the old install location")
-        shutil.rmtree(old_dir, ignore_errors=True)
-        say(f"  removed old install left over at {old_dir}")
+        subprocess.run(
+            ["icacls", str(DATA_DIR), "/grant", f"{_USERS_SID}:(OI)(CI)M"],
+            capture_output=True, timeout=15)
     except Exception as e:
-        say(f"  couldn't clean up old install at {old_dir}: {e}")
+        say(f"  (couldn't set permissions on {DATA_DIR}: {e} -- should still work for you)")
 
 
-def install_app_files():
+def migrate_and_cleanup_old_dirs():
+    """Every build before this one kept the app binaries AND config.json
+    together in one folder -- first %LOCALAPPDATA%\\PC2Sonos, then (very
+    briefly) Documents\\PC2Sonos, which turned out to still be inside
+    OneDrive on any PC with Documents redirected there. Carries the
+    config forward into the new, separate DATA_DIR before wiping each old
+    folder -- config.py's own migration only runs once PC2Sonos.exe
+    itself starts, which happens after this, so doing it here too means
+    an upgrade never has a moment where the old settings exist nowhere."""
+    new_config = DATA_DIR / "config.json"
+    for old_dir in _OLD_DIRS:
+        if not old_dir.exists():
+            continue
+        try:
+            old_config = old_dir / "config.json"
+            if old_config.exists() and not new_config.exists():
+                shutil.copy2(old_config, new_config)
+                say("  carried your existing settings over from the old install location")
+            shutil.rmtree(old_dir, ignore_errors=True)
+            say(f"  removed old install left over at {old_dir}")
+        except Exception as e:
+            say(f"  couldn't clean up old install at {old_dir}: {e}")
+
+
+def install_app_files(dst_dir):
     src = payload_dir() / f"{APP_NAME}.exe"
-    dst_dir = install_dir()
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / f"{APP_NAME}.exe"
     stop_running_app()
     time.sleep(1.0)
     shutil.copy2(src, dst)
     say(f"  installed {dst}")
-    cleanup_old_appdata_install()
+
+    setup_data_dir()
+    migrate_and_cleanup_old_dirs()
 
     # the uninstaller ships as its own small exe (built the same way as
     # this installer) so it can be run standalone later, long after this
@@ -126,7 +195,7 @@ def register_uninstaller(exe_path, uninstall_exe_path):
     try:
         with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, UNINSTALL_KEY) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_NAME)
-            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "1.1.1")
+            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "1.2.0")
             winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, APP_NAME)
             winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{uninstall_exe_path}"')
             winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(exe_path))
@@ -249,8 +318,11 @@ def main():
         input("Press Enter to exit...")
         return 1
 
+    install_dir = prompt_install_dir()
+
     say("[1/7] Installing app files...")
-    exe, uninstall_exe = install_app_files()
+    say(f"  installing to {install_dir}")
+    exe, uninstall_exe = install_app_files(install_dir)
 
     say("[2/7] Virtual audio cable...")
     ok = install_cable_driver()

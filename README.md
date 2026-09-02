@@ -108,7 +108,9 @@ is shared with tools like SWYH.
 - `webapp.py` -- Flask dashboard + the WAV endpoints Sonos speakers pull
   audio from
 - `tray_icon.py` -- system tray icon (Open Dashboard / Quit)
-- `config.py` -- settings load/save (`Documents\PC2Sonos\config.json`)
+- `config.py` -- settings load/save (`C:\ProgramData\PC2Sonos\config.json`
+  -- deliberately not Documents or AppData, see the comment at the top of
+  the file)
 - `diagnostics.py` -- crash logging + the dashboard's "Export Diagnostics" bundle
 - `windows_audio.py` / `windows_firewall.py` -- Windows-specific helpers
   (default output device, firewall rules)

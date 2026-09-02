@@ -4,35 +4,53 @@ import shutil
 import threading
 from pathlib import Path
 
-# Documents rather than AppData: AppData is hidden by default in Explorer
-# and plenty of people who want to look at the log/config by hand (or find
-# the app to move/back it up) never find it there. Documents is always
-# visible, per-user, and needs no elevation to write to.
-APP_DIR = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / "PC2Sonos"
+# %ProgramData%\PC2Sonos (normally C:\ProgramData\PC2Sonos): a per-machine
+# data folder that is NEVER touched by OneDrive's Known Folder Move, unlike
+# Desktop/Documents/Pictures -- those get silently redirected into OneDrive
+# on any PC with "Backup" turned on, which previously meant this app's
+# config/log lived inside a cloud-synced folder without anyone choosing
+# that. ProgramData also needs no elevation to write into once the folder
+# itself exists (see setup_installer.py, which creates it during the
+# elevated install and grants standard users write access), so the app
+# can keep saving config.json during normal, unelevated use. The actual
+# PC2Sonos.exe/PC2Sonos-Uninstall.exe binaries live elsewhere (Program
+# Files by default) -- this is just the small, frequently-rewritten data
+# file, kept separate because Program Files itself can't be written to
+# without elevation.
+APP_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "PC2Sonos"
 CONFIG_PATH = APP_DIR / "config.json"
 
-_OLD_APP_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "PC2Sonos"
+# Every location this data has lived in before, oldest first -- checked in
+# order so an upgrade from ANY prior version carries the existing config
+# forward instead of silently starting over.
+_OLD_APP_DIRS = [
+    Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / "PC2Sonos",
+    Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "PC2Sonos",
+]
 
 
-def _migrate_from_appdata():
-    """One-time migration for anyone who installed a version of PC2Sonos
-    that lived in %LOCALAPPDATA%\\PC2Sonos (every build before this one).
-    Without this, upgrading would silently orphan their old config --
-    their tuned delay, which speakers they'd enabled/disabled, and per-
-    speaker volumes -- and start them over from scratch in the new
-    Documents location, with the old folder just left behind forever."""
-    old_config = _OLD_APP_DIR / "config.json"
-    if CONFIG_PATH.exists() or not old_config.exists():
+def _migrate_from_old_locations():
+    """One-time migration for anyone upgrading from a version of PC2Sonos
+    that stored config.json in Documents (OneDrive-synced, if Documents
+    is redirected there -- the reason this moved again) or, before that,
+    %LOCALAPPDATA%. Without this, upgrading would silently orphan the
+    existing config -- tuned delay, which speakers were enabled, per-
+    speaker volumes -- and start over from scratch."""
+    if CONFIG_PATH.exists():
         return
-    try:
-        APP_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(old_config, CONFIG_PATH)
-    except Exception:
-        pass
+    for old_dir in _OLD_APP_DIRS:
+        old_config = old_dir / "config.json"
+        if old_config.exists():
+            try:
+                APP_DIR.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(old_config, CONFIG_PATH)
+            except Exception:
+                pass
+            return
 
 
 APP_DIR.mkdir(parents=True, exist_ok=True)
-_migrate_from_appdata()
+_migrate_from_old_locations()
 
 DEFAULT_CONFIG = {
     # Substring match against Windows device names. VB-Audio Virtual
