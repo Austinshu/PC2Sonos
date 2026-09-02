@@ -98,6 +98,37 @@ def measure_transport_delay(zone, base_url, uid, settle_seconds=8.0, poll_interv
     return int(round(median * 1000))
 
 
+def _effective_zone(zone):
+    """The zone that actually accepts transport commands (play_uri, stop)
+    for whatever group `zone` currently belongs to.
+
+    Sonos requires those commands to be sent to a group's COORDINATOR --
+    SoCo raises SoCoSlaveException if you call zone.play_uri()/zone.stop()
+    directly on a different member of a group someone made in the Sonos
+    app. Before this, that's exactly what happened: every non-coordinator
+    member's checkbox silently did nothing (the exception was caught and
+    logged, nothing else). The member was often still audibly playing our
+    audio anyway, because grouped speakers all replicate the coordinator's
+    stream automatically -- so the actual "off switch" for a whole grouped
+    set of speakers was hidden behind whichever one happened to be the
+    coordinator, indistinguishable in the dashboard from any other row.
+    That's the likely explanation for someone enabling/disabling what
+    looked like one speaker and getting (or being unable to stop) audio
+    across an entire Sonos group.
+
+    Routing every command through the coordinator instead means toggling
+    ANY member of a group in the dashboard now actually starts/stops
+    playback for that whole group, matching what the Sonos app itself
+    shows as one unit."""
+    try:
+        group = zone.group
+        if group is not None and group.coordinator is not None:
+            return group.coordinator
+    except Exception:
+        pass
+    return zone
+
+
 class SpeakerManager:
     def __init__(self):
         self.speakers = {}   # uid -> soco.SoCo
@@ -146,12 +177,24 @@ class SpeakerManager:
             out = []
             for uid, zone in self.speakers.items():
                 cfg = config["speakers"].get(uid, {"enabled": True, "volume": 50})
+                # surfaced so the dashboard can show "grouped with X, Y" --
+                # toggling any one of them actually affects the whole group
+                # (see _effective_zone), so the UI shouldn't imply otherwise
+                group_members = []
+                try:
+                    grp = zone.group
+                    if grp is not None and len(grp.members) > 1:
+                        group_members = sorted(
+                            m.player_name for m in grp.members if m.player_name != zone.player_name)
+                except Exception:
+                    pass
                 out.append({
                     "uid": uid,
                     "name": zone.player_name,
                     "enabled": cfg.get("enabled", True),
                     "volume": cfg.get("volume", 50),
                     "streaming": self.streams.get(uid, False),
+                    "grouped_with": group_members,
                 })
             return sorted(out, key=lambda s: s["name"])
 
@@ -183,7 +226,7 @@ class SpeakerManager:
         self._last_auto_restart[uid] = time.monotonic()
         try:
             url = f"{base_url}/stream/{uid}.wav"
-            zone.play_uri(url, meta=_track_metadata("PC Audio"))
+            _effective_zone(zone).play_uri(url, meta=_track_metadata("PC Audio"))
             self.streams[uid] = True
             print(f"[sonos] streaming to {zone.player_name}")
         except Exception as e:
@@ -191,7 +234,7 @@ class SpeakerManager:
 
     def stop_stream(self, uid, zone):
         try:
-            zone.stop()
+            _effective_zone(zone).stop()
         except Exception:
             pass
         self.streams[uid] = False
@@ -246,9 +289,15 @@ class SpeakerManager:
             if not config["speakers"].get(uid, {}).get("enabled", True):
                 continue
             try:
-                uri = zone.avTransport.GetMediaInfo([("InstanceID", 0)]).get("CurrentURI") or ""
+                # query the COORDINATOR's transport, not this zone's own --
+                # a grouped, non-coordinator member mirrors the group's
+                # playback but reports its own CurrentURI as a pointer back
+                # to the coordinator (x-rincon:...), not our stream URL, so
+                # checking against this zone directly would never see "ours"
+                target = _effective_zone(zone)
+                uri = target.avTransport.GetMediaInfo([("InstanceID", 0)]).get("CurrentURI") or ""
                 ours = f"/stream/{uid}.wav" in uri
-                state = zone.get_current_transport_info().get("current_transport_state", "")
+                state = target.get_current_transport_info().get("current_transport_state", "")
             except Exception as e:
                 # speaker unreachable / query failed; try again next tick
                 if uid not in self._warned:

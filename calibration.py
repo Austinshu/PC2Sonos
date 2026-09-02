@@ -311,7 +311,19 @@ def run_calibration_silent():
 
         _set_status("recording", "Measuring Sonos's own playback timing (no sound needed)...")
         base_url = f"http://{get_lan_ip()}:{config['http_port']}"
-        results = speaker_mgr.measure_delay_ms(base_url)
+        # A single pass can land up to ~1 tick (about a second) off just from
+        # RelTime's 1-second resolution -- see measure_transport_delay's own
+        # docstring. That's the real reason back-to-back Auto runs can read
+        # noticeably different numbers; it's measurement quantization noise,
+        # not the app being wrong. Averaging two independent passes (each
+        # already an internal median over ~8s of ticks) cancels most of
+        # that out without a much longer single pass.
+        pass1 = speaker_mgr.measure_delay_ms(base_url)
+        pass2 = speaker_mgr.measure_delay_ms(base_url)
+        results = {uid: int(round((pass1[uid] + pass2[uid]) / 2))
+                   for uid in pass1 if uid in pass2}
+        if not results:
+            results = pass1 or pass2
 
         if not results:
             _set_status("error",

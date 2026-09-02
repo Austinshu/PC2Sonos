@@ -1,11 +1,38 @@
 import json
 import os
+import shutil
 import threading
 from pathlib import Path
 
-APP_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "PC2Sonos"
-APP_DIR.mkdir(parents=True, exist_ok=True)
+# Documents rather than AppData: AppData is hidden by default in Explorer
+# and plenty of people who want to look at the log/config by hand (or find
+# the app to move/back it up) never find it there. Documents is always
+# visible, per-user, and needs no elevation to write to.
+APP_DIR = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / "PC2Sonos"
 CONFIG_PATH = APP_DIR / "config.json"
+
+_OLD_APP_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "PC2Sonos"
+
+
+def _migrate_from_appdata():
+    """One-time migration for anyone who installed a version of PC2Sonos
+    that lived in %LOCALAPPDATA%\\PC2Sonos (every build before this one).
+    Without this, upgrading would silently orphan their old config --
+    their tuned delay, which speakers they'd enabled/disabled, and per-
+    speaker volumes -- and start them over from scratch in the new
+    Documents location, with the old folder just left behind forever."""
+    old_config = _OLD_APP_DIR / "config.json"
+    if CONFIG_PATH.exists() or not old_config.exists():
+        return
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(old_config, CONFIG_PATH)
+    except Exception:
+        pass
+
+
+APP_DIR.mkdir(parents=True, exist_ok=True)
+_migrate_from_appdata()
 
 DEFAULT_CONFIG = {
     # Substring match against Windows device names. VB-Audio Virtual

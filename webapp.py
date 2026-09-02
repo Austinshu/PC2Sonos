@@ -149,9 +149,10 @@ async function refresh(){
   data.forEach(s => {
     const div = document.createElement('div');
     div.className = 'speaker';
+    const grouped = s.grouped_with && s.grouped_with.length;
     div.innerHTML = `
       <input type="checkbox" class="toggle" ${s.enabled ? 'checked' : ''} onchange="toggle('${s.uid}', this.checked)">
-      <span class="name">${s.name}</span>
+      <span class="name">${s.name}${grouped ? ` <span style="font-weight:400; color:#888; font-size:12px;">(grouped with ${s.grouped_with.join(', ')} &mdash; this also controls them)</span>` : ''}</span>
       <input type="range" min="0" max="100" value="${s.volume}" onchange="setVol('${s.uid}', this.value)">
       <span style="width:36px; display:inline-block;">${s.volume}%</span>
       <span class="status ${s.streaming ? 'on' : 'off'}">${s.streaming ? 'streaming' : 'idle'}</span>

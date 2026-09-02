@@ -10,7 +10,8 @@ bundled inside it (see build_installer.ps1):
 
 What one double-click does on a fresh x64 PC:
     1. installs PC2Sonos.exe (+ PC2Sonos-Uninstall.exe) to
-       %LOCALAPPDATA%\\PC2Sonos\\app
+       Documents\\PC2Sonos\\app (visible, easy to find -- not hidden
+       away in AppData)
     2. installs the VB-CABLE virtual audio driver if it's missing
        (silent; falls back to VB-Audio's visible installer window)
     3. sets "CABLE Input" as the Windows default output device
@@ -46,7 +47,9 @@ def payload_dir():
 
 
 def install_dir():
-    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / APP_NAME / "app"
+    # Documents, not AppData: visible in Explorer by default, so someone
+    # who wants to find/back up/move the app folder actually can.
+    return Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / APP_NAME / "app"
 
 
 def cable_present():
@@ -64,6 +67,29 @@ def stop_running_app():
         capture_output=True)
 
 
+def cleanup_old_appdata_install():
+    """Every build before this one installed to %LOCALAPPDATA%\\PC2Sonos.
+    Carry the old config.json (tuned delay, which speakers were enabled,
+    per-speaker volume) over to the new Documents location BEFORE wiping
+    the old folder -- config.py's own migration only runs once PC2Sonos.exe
+    itself starts, which happens after this, so doing it here too means an
+    upgrade never has a moment where the old settings exist nowhere."""
+    old_dir = Path(os.environ.get("LOCALAPPDATA", "")) / APP_NAME
+    if not old_dir.exists():
+        return
+    try:
+        old_config = old_dir / "config.json"
+        new_config = install_dir().parent / "config.json"
+        if old_config.exists() and not new_config.exists():
+            new_config.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old_config, new_config)
+            say("  carried your existing settings over from the old install location")
+        shutil.rmtree(old_dir, ignore_errors=True)
+        say(f"  removed old install left over at {old_dir}")
+    except Exception as e:
+        say(f"  couldn't clean up old install at {old_dir}: {e}")
+
+
 def install_app_files():
     src = payload_dir() / f"{APP_NAME}.exe"
     dst_dir = install_dir()
@@ -73,6 +99,7 @@ def install_app_files():
     time.sleep(1.0)
     shutil.copy2(src, dst)
     say(f"  installed {dst}")
+    cleanup_old_appdata_install()
 
     # the uninstaller ships as its own small exe (built the same way as
     # this installer) so it can be run standalone later, long after this
