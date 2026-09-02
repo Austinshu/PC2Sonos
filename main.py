@@ -24,6 +24,42 @@ import time
 from pathlib import Path
 
 
+_NOOP_LOCK = object()  # stand-in "we hold the lock" on non-Windows
+
+
+def acquire_single_instance_lock(name="PC2Sonos"):
+    """Take a machine-session-wide named lock so a second copy of the app
+    can bow out instead of fighting the first one for the HTTP port, the
+    capture device, and control of the speakers.
+
+    This actually bites at login: Windows sometimes runs a Startup-folder
+    item twice (Explorer re-processing the folder when it restarts early
+    in the session), and both copies then boot-start the same speaker and
+    run their own watchdogs against it.
+
+    Returns an opaque handle to keep alive for the process lifetime, or
+    None if another instance already holds the lock. Never raises -- if
+    the OS call fails we return the handle and let the app start."""
+    if sys.platform != "win32":
+        return _NOOP_LOCK
+    try:
+        import ctypes
+        ERROR_ALREADY_EXISTS = 183
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # no "Global\\" prefix -> scoped to this login session, which is
+        # exactly where the double-launch happens; also avoids needing
+        # any special privilege
+        handle = kernel32.CreateMutexW(None, False, f"{name}-single-instance")
+        if not handle:
+            return _NOOP_LOCK
+        if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
+            return None
+        return handle
+    except Exception:
+        return _NOOP_LOCK
+
+
 def _wait_for_http(port, stop_event, timeout=20):
     """Block until something is accepting TCP connections on
     127.0.0.1:<port> (our Flask server), or `timeout` seconds pass, or we
@@ -108,11 +144,19 @@ def sonos_discovery_loop(stop_event, on_demand=False, ready_event=None):
 
 
 def main():
-    # first thing, no matter what -- so a crash in anything below this
-    # line still gets a full traceback in the log instead of just
-    # silently stopping. This is the difference between "someone else's
-    # PC has a bug we'll never see" and "someone else's PC has a bug we
-    # can actually read about."
+    # Bail out early if another copy is already running -- before we touch
+    # the HTTP port, the capture device, or any speaker. Held for the
+    # process lifetime via this local (main() never returns until exit).
+    _instance_lock = acquire_single_instance_lock()
+    if _instance_lock is None:
+        print("[startup] another PC2Sonos instance is already running -- exiting")
+        return
+
+    # first thing after that -- so a crash in anything below this line
+    # still gets a full traceback in the log instead of just silently
+    # stopping. This is the difference between "someone else's PC has a
+    # bug we'll never see" and "someone else's PC has a bug we can
+    # actually read about."
     install_global_exception_logging()
 
     stop_event = threading.Event()

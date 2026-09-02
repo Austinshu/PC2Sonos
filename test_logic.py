@@ -365,6 +365,20 @@ finally:
     sonos_ctl.speaker_mgr.rescan_requested.clear()
 print("  OK")
 
+print("[test] single-instance lock: second acquire is refused...")
+# unique name so this doesn't collide with a real running PC2Sonos.exe
+_lock_name = f"PC2Sonos-test-{os.getpid()}"
+_h1 = _main.acquire_single_instance_lock(_lock_name)
+assert _h1 is not None, "first acquire should succeed"
+_h2 = _main.acquire_single_instance_lock(_lock_name)
+if sys.platform == "win32":
+    assert _h2 is None, "second acquire (same name) must be refused"
+    import ctypes as _ct
+    _ct.WinDLL("kernel32").CloseHandle(_h1)  # release so nothing wedges
+else:
+    assert _h2 is not None, "non-Windows: lock is a no-op, always granted"
+print("  OK")
+
 print("[test] diagnostics module...")
 import diagnostics  # noqa: E402
 
