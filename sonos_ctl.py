@@ -445,9 +445,9 @@ class SpeakerManager:
 
     def request_rescan(self):
         """One immediate discovery pass, plus a nudge for the on_demand
-        loop (which is otherwise idle)."""
+        loop (which is otherwise idle). Returns rediscover()'s status."""
         self.rescan_requested.set()
-        self.rediscover()
+        return self.rediscover()
 
     def set_volume(self, uid, volume):
         zone = self.speakers.get(uid)

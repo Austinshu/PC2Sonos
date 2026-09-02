@@ -257,7 +257,8 @@ async function rescan(){
   try {
     const res = await fetch('/api/rescan', {method:'POST'});
     const data = await res.json();
-    el.textContent = 'Found ' + data.found + ' speaker' + (data.found === 1 ? '' : 's') + '.';
+    el.textContent = 'Found ' + data.found + ' speaker' + (data.found === 1 ? '' : 's') + '.'
+      + (data.ok ? '' : ' (a scan step hit an error -- see the log)');
   } catch (e) {
     el.textContent = 'Scan failed: ' + e;
   }
@@ -281,9 +282,12 @@ async function saveSeedIps(){
   const ips = raw.split(',').map(s => s.trim()).filter(Boolean);
   const res = await fetch('/api/sonos_seed', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({seed_ips: ips})});
   const data = await res.json();
-  el.textContent = data.ok
-    ? ('Saved. Speakers found so far: ' + data.found)
-    : ('Failed: ' + (data.error || 'unknown error'));
+  if (data.error) {
+    el.textContent = 'Failed: ' + data.error;
+  } else {
+    el.textContent = 'Saved. Speakers found so far: ' + data.found
+      + (data.ok ? '' : ' (a scan step hit an error -- see the log)');
+  }
   refresh();
 }
 async function toggle(uid, enabled){
@@ -462,11 +466,11 @@ def api_sonos_seed():
         return jsonify({"ok": False, "error": "seed_ips must be a list"}), 400
     config["sonos_seed_ips"] = [str(ip).strip() for ip in ips if str(ip).strip()]
     save_config(config)
-    try:
-        speaker_mgr.rediscover()
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
-    return jsonify({"ok": True, "found": len(speaker_mgr.list())})
+    # rediscover() swallows its own errors and reports success/failure via
+    # its return value -- pass that straight through rather than always
+    # claiming ok
+    ok = speaker_mgr.rediscover()
+    return jsonify({"ok": ok, "found": len(speaker_mgr.list())})
 
 
 @app.route("/api/rescan", methods=["POST"])
@@ -474,11 +478,8 @@ def api_rescan():
     """One immediate discovery pass. Useful in auto mode (skip the wait
     for the next 15s tick) and required in on_demand mode (the background
     loop is idle until asked)."""
-    try:
-        speaker_mgr.request_rescan()
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
-    return jsonify({"ok": True, "found": len(speaker_mgr.list())})
+    ok = speaker_mgr.request_rescan()
+    return jsonify({"ok": ok, "found": len(speaker_mgr.list())})
 
 
 @app.route("/api/default_speaker", methods=["POST"])
