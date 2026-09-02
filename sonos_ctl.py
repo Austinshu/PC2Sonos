@@ -162,11 +162,14 @@ class SpeakerManager:
                     if uid not in self.speakers:
                         self.speakers[uid] = zone
                         if uid not in config["speakers"]:
-                            try:
-                                vol = zone.volume
-                            except Exception:
-                                vol = 50
-                            config["speakers"][uid] = {"enabled": True, "volume": vol}
+                            # deliberately NOT reading the speaker's current
+                            # real volume here -- this is only the starting
+                            # position of OUR dashboard slider, not a change
+                            # to the physical speaker (nothing is sent to
+                            # the zone until someone actually touches the
+                            # slider). 50% is a sane, unsurprising starting
+                            # point for every newly-discovered speaker.
+                            config["speakers"][uid] = {"enabled": True, "volume": 50}
                         print(f"[sonos] found: {zone.player_name}")
             save_config(config)
         except Exception as e:
