@@ -298,7 +298,9 @@ try:
         def group(self):
             return None
     _orig_soco = sonos_ctl.SoCo
+    _orig_sleep = sonos_ctl.time.sleep
     sonos_ctl.SoCo = FakeSoCo
+    sonos_ctl.time.sleep = lambda _s: None   # don't wait out the prime retry
     try:
         _cfg["default_speaker_ip"] = ""
         _cfg["default_speaker_uid"] = ""
@@ -323,6 +325,7 @@ try:
         assert m2c.prime_default_speaker() is None
     finally:
         sonos_ctl.SoCo = _orig_soco
+        sonos_ctl.time.sleep = _orig_sleep
 
     # set_default_speaker: pin by uid (needs a known IP), and clear
     m3 = sonos_ctl.SpeakerManager()

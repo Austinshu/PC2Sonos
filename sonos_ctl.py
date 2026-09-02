@@ -196,12 +196,22 @@ class SpeakerManager:
         ip = str(config.get("default_speaker_ip") or "").strip()
         if not ip:
             return None
-        try:
-            zone = SoCo(ip)
-            uid = zone.uid
-        except Exception as e:
-            print(f"[sonos] default speaker {ip} not reachable at launch: {e}")
-            return None
+        # A speaker waking from standby can take longer than the 4s
+        # REQUEST_TIMEOUT to answer its first request. Give it a few
+        # tries before falling back to normal discovery, otherwise a
+        # cold-boot default speaker silently misses the fast-start path.
+        zone = uid = None
+        for attempt in range(3):
+            try:
+                zone = SoCo(ip)
+                uid = zone.uid
+                break
+            except Exception as e:
+                if attempt == 2:
+                    print(f"[sonos] default speaker {ip} not reachable at "
+                          f"launch after {attempt + 1} tries: {e}")
+                    return None
+                time.sleep(2)
 
         expected = str(config.get("default_speaker_uid") or "").strip()
         if expected and expected != uid:
