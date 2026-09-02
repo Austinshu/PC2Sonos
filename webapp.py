@@ -88,9 +88,23 @@ DASHBOARD_HTML = """
            style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
     <span>ms</span>
     <button onclick="setDelay()">Apply</button>
-    <button onclick="autoCalibrate()" style="background:#2b6cb0; color:#fff;">Auto</button>
+    <button onclick="autoCalibrate('silent')" style="background:#2b6cb0; color:#fff;">Auto</button>
   </div>
   <div id="calibResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
+  <div style="margin-top:10px; font-size:12px;">
+    <a href="#" onclick="toggleMicHelp(); return false;" style="color:#2b6cb0;">Prefer a test tone + microphone instead?</a>
+    <div id="micHelp" style="display:none; margin-top:8px; color:#aaa; line-height:1.5;">
+      Put the microphone (built-in laptop mic, or any USB/headset mic) somewhere it
+      can clearly hear <strong>both</strong> your PC speakers and the Sonos speaker(s)
+      you're syncing to at once &mdash; roughly the midpoint between them, not sitting
+      right next to either one. A headset mic worn while sitting at the PC usually
+      only hears the PC speakers well and will give a bad reading. Works best in a
+      quiet room.
+      <div style="margin-top:8px;">
+        <button onclick="autoCalibrate('acoustic')" style="background:#2b6cb0; color:#fff;">Calibrate with test tone</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="card">
@@ -184,10 +198,12 @@ async function setDelay(){
   await fetch('/api/delay', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({delay_ms: parseInt(v)})});
 }
 let calibPolling = null;
-async function autoCalibrate(){
+async function autoCalibrate(method){
   const el = document.getElementById('calibResult');
-  el.textContent = 'Starting -- you will hear a short test tone...';
-  await fetch('/api/calibrate', {method:'POST'});
+  el.textContent = method === 'acoustic'
+    ? 'Starting -- you will hear a short test tone...'
+    : 'Starting -- measuring Sonos playback timing (no sound needed)...';
+  await fetch('/api/calibrate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({method})});
   if (calibPolling) clearInterval(calibPolling);
   calibPolling = setInterval(async () => {
     const res = await fetch('/api/calibrate/status');
@@ -202,6 +218,10 @@ async function autoCalibrate(){
       }
     }
   }, 700);
+}
+function toggleMicHelp(){
+  const el = document.getElementById('micHelp');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 async function loadDevices(){
   const res = await fetch('/api/devices');
