@@ -289,11 +289,23 @@ def open_firewall(exe_path):
 
 
 def make_shortcuts(exe_path):
+    # Startup stays per-user (AppData\Roaming -- not affected by OneDrive's
+    # Known Folder Move) so it launches for the person who installed it.
+    # Desktop uses the system-wide PUBLIC desktop (CommonDesktopDirectory,
+    # C:\Users\Public\Desktop) instead of the per-user one deliberately --
+    # [Environment]::GetFolderPath('Desktop') resolves to wherever Windows
+    # currently has the user's Desktop pointed, which OneDrive's Known
+    # Folder Move silently redirects into OneDrive on any PC with that
+    # turned on (as it is here). The public desktop is a real, separate
+    # location on disk that OneDrive never touches, and still shows up on
+    # this user's Desktop (Explorer merges the per-user and public desktop
+    # folders into one view) -- same visible result, without landing the
+    # shortcut inside a cloud-synced folder.
     ps = f'''
 $W = New-Object -ComObject WScript.Shell
 foreach ($where in @(
     [Environment]::GetFolderPath('Startup'),
-    [Environment]::GetFolderPath('Desktop'))) {{
+    [Environment]::GetFolderPath('CommonDesktopDirectory'))) {{
   $s = $W.CreateShortcut((Join-Path $where "{APP_NAME}.lnk"))
   $s.TargetPath = "{exe_path}"
   $s.WorkingDirectory = "{exe_path.parent}"

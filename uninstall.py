@@ -192,11 +192,32 @@ def remove_firewall_rules():
             say(f"  removed firewall rule: {name}")
 
 
+def _shell_folder(name):
+    """Asks Windows itself where a special folder actually is right now,
+    rather than guessing a path -- os.path.expanduser("~/Desktop") is NOT
+    the same thing as the real Desktop folder once OneDrive's Known
+    Folder Move has redirected it, and silently checking the wrong path
+    would leave an old shortcut behind forever."""
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", f"[Environment]::GetFolderPath('{name}')"],
+        capture_output=True, text=True)
+    path = r.stdout.strip()
+    return Path(path) if path else None
+
+
 def remove_shortcuts():
-    for where in (
-        Path(os.environ.get("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs/Startup",
-        Path(os.path.expanduser("~/Desktop")),
-    ):
+    locations = [Path(os.environ.get("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs/Startup"]
+    # CommonDesktopDirectory: where the installer puts it now (never
+    # OneDrive-redirected). Desktop: wherever Windows currently resolves
+    # the per-user one -- covers shortcuts created by older installer
+    # builds that used this instead, which could be sitting inside
+    # OneDrive if Known Folder Move is on.
+    for name in ("CommonDesktopDirectory", "Desktop"):
+        folder = _shell_folder(name)
+        if folder:
+            locations.append(folder)
+
+    for where in locations:
         shortcut = where / f"{APP_NAME}.lnk"
         if shortcut.exists():
             try:
