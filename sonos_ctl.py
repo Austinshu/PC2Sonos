@@ -209,16 +209,19 @@ class SpeakerManager:
                   f"speaker {expected} -- ignoring it, letting discovery take over")
             return None
 
+        name, groups = self._zone_meta(zone)  # network I/O -- keep it off the lock
         with self._lock:
             if not expected:
                 config["default_speaker_uid"] = uid
-                save_config(config)
             self._known_ips.add(ip)
-            self._refresh_zone_meta(uid, zone)
+            if name:
+                self.names[uid] = name
+            if groups is not None:
+                self.groups[uid] = groups
             self.speakers.setdefault(uid, zone)
             config["speakers"].setdefault(
                 uid, {"enabled": True, "volume": 50})["enabled"] = True
-            save_config(config)
+        save_config(config)
         print(f"[sonos] default speaker ready at launch: {self.names.get(uid, uid)}")
         return uid
 
@@ -282,11 +285,33 @@ class SpeakerManager:
         return zones
 
     def rediscover(self):
+        """Run a discovery pass and merge the results. Returns True if it
+        completed, False if something went wrong along the way (the
+        dashboard's rescan routes surface this)."""
         try:
             found = self._discover_zones()
         except Exception as e:
             print(f"[sonos] discovery error: {e}")
-            return
+            return False
+
+        # Resolve each zone's name + group membership -- which is network
+        # I/O, up to a REQUEST_TIMEOUT per unreachable zone -- BEFORE
+        # taking self._lock. list() needs that same lock for every
+        # /api/speakers poll (every 4s), so doing this under it would let
+        # one asleep speaker stall the whole dashboard.
+        resolved = []  # (uid, zone, ip, name, groups)
+        for zone in found:
+            try:
+                uid = zone.uid
+            except Exception:
+                continue
+            try:
+                ip = zone.ip_address or ""
+            except Exception:
+                ip = ""
+            name, groups = self._zone_meta(zone)
+            resolved.append((uid, zone, ip, name, groups))
+
         # everything below used to run unguarded -- a single flaky zone
         # (a bad .volume read, a save_config hiccup) would raise straight
         # out of rediscover() and kill the discovery thread for the rest
@@ -294,14 +319,13 @@ class SpeakerManager:
         # obvious reason why. Guard it so that can't happen.
         try:
             with self._lock:
-                for zone in found:
-                    uid = zone.uid
-                    try:
-                        if zone.ip_address:
-                            self._known_ips.add(zone.ip_address)
-                    except Exception:
-                        pass
-                    self._refresh_zone_meta(uid, zone)
+                for uid, zone, ip, name, groups in resolved:
+                    if ip:
+                        self._known_ips.add(ip)
+                    if name:
+                        self.names[uid] = name
+                    if groups is not None:
+                        self.groups[uid] = groups
                     if uid not in self.speakers:
                         self.speakers[uid] = zone
                         if uid not in config["speakers"]:
@@ -320,18 +344,19 @@ class SpeakerManager:
             save_config(config)
         except Exception as e:
             print(f"[sonos] discovery bookkeeping error: {e}")
+            return False
+        return True
 
-    def _refresh_zone_meta(self, uid, zone):
-        """Pull this zone's display name and current group membership into
-        our own caches. Called only from the background discovery/watchdog
-        threads, never from list() -- those threads already tolerate a
-        slow or failed call, the dashboard poll does not."""
+    def _zone_meta(self, zone):
+        """(display name, sorted list of visible group-member names) for a
+        zone. Makes network calls (player_name / group topology), so this
+        must run OUTSIDE self._lock and the caller merges the result in
+        afterwards. Returns (None, None) if the zone can't be reached;
+        (name, None) if the name resolved but the group didn't."""
         try:
-            name = zone.player_name
-            if name:
-                self.names[uid] = name
+            name = zone.player_name or None
         except Exception:
-            return
+            return None, None
         try:
             grp = zone.group
             others = []
@@ -339,7 +364,7 @@ class SpeakerManager:
                 # skip the zone itself and any bonded satellites/subs --
                 # those aren't separately-controllable "speakers", they'd
                 # just show up as a confusing "grouped with Sub, Sub"
-                if m.uid == uid:
+                if m.uid == zone.uid:
                     continue
                 try:
                     if not m.is_visible:
@@ -348,9 +373,9 @@ class SpeakerManager:
                     continue
                 if m.player_name:
                     others.append(m.player_name)
-            self.groups[uid] = sorted(others)
+            return name, sorted(others)
         except Exception:
-            pass
+            return name, None
 
     def list(self):
         with self._lock:
