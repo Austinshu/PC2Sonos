@@ -126,7 +126,7 @@ def register_uninstaller(exe_path, uninstall_exe_path):
     try:
         with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, UNINSTALL_KEY) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_NAME)
-            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "1.0.0")
+            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "1.1.0")
             winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, APP_NAME)
             winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{uninstall_exe_path}"')
             winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(exe_path))
