@@ -223,32 +223,41 @@ class SpeakerManager:
         return uid
 
     def _discover_zones(self):
-        """Return the set of Sonos zones to track.
+        """The set of Sonos zones to track, from every source that applies
+        -- results are UNIONed, not taken from the first that returns
+        something (a SoCo set dedupes by uid).
 
-        Normal path: SSDP multicast (`discover`). That's all that runs on
-        a flat network and it's fast.
-
-        Cross-subnet path: when the speakers are on a different VLAN (an
-        IoT VLAN is the common case), the router won't forward SSDP
-        multicast, so `discover` comes back empty even though unicast
-        control works fine. Fall back to talking to a known speaker IP
-        directly -- reaching ANY one speaker yields the entire household
-        via its ZoneGroupTopology -- and, failing that, to a unicast
-        sweep of an operator-supplied subnet."""
+        - SSDP multicast (`discover`): on a flat network this alone is
+          complete -- and on a hit `soco.discovery.discover` already
+          returns the responder's full `visible_zones`, so a single
+          household that meshes across VLANs over SonosNet comes back
+          whole here too.
+        - Configured `sonos_seed_ips`: always walked when set. A mixed
+          setup -- some speakers on the LAN, a separate Sonos system on
+          an IoT VLAN reachable only by unicast -- would otherwise never
+          find the VLAN speakers once SSDP returns the LAN ones. Reaching
+          any one speaker yields its whole household via ZoneGroupTopology.
+        - `sonos_scan_cidrs`: a unicast subnet sweep. Last resort (it's
+          the expensive one) -- only when nothing else turned anything up.
+        - Previously-seen IPs (`known_ips()`): a recovery path, used only
+          when SSDP and any configured seeds all came back empty."""
+        zones = set()
         try:
-            found = discover(timeout=5) or set()
+            zones |= discover(timeout=5) or set()
         except Exception as e:
             print(f"[sonos] SSDP discovery error: {e}")
-            found = set()
-        if found:
-            return found
 
-        seeds = list(config.get("sonos_seed_ips") or []) + self.known_ips()
-        zones = set()
+        seed_ips = [str(s).strip() for s in (config.get("sonos_seed_ips") or [])
+                    if str(s).strip()]
+        scan_cidrs = [str(c).strip() for c in (config.get("sonos_scan_cidrs") or [])
+                      if str(c).strip()]
+
+        seeds = list(seed_ips)
+        if not zones and not seeds:
+            seeds = self.known_ips()
         tried = set()
         for ip in seeds:
-            ip = str(ip).strip()
-            if not ip or ip in tried:
+            if ip in tried:
                 continue
             tried.add(ip)
             try:
@@ -257,25 +266,19 @@ class SpeakerManager:
                 # THIS speaker, which we know we just reached -- otherwise
                 # the first .player_name access later might land on a
                 # speaker that's currently asleep and stall/return blank.
-                # The reachable seed's topology already carries every
-                # zone's name.
                 _ = device.player_name
                 zones |= (device.visible_zones or {device})
             except Exception as e:
                 print(f"[sonos] seed speaker {ip} unreachable: {e}")
-        if zones:
-            return zones
 
-        for cidr in config.get("sonos_scan_cidrs") or []:
-            cidr = str(cidr).strip()
-            if not cidr:
-                continue
-            try:
-                print(f"[sonos] SSDP found nothing; unicast-scanning {cidr}")
-                zones |= (scan_network(networks_to_scan=[cidr],
-                                       multi_household=True) or set())
-            except Exception as e:
-                print(f"[sonos] subnet scan of {cidr} failed: {e}")
+        if scan_cidrs and not zones:
+            for cidr in scan_cidrs:
+                try:
+                    print(f"[sonos] nothing found yet; unicast-scanning {cidr}")
+                    zones |= (scan_network(networks_to_scan=[cidr],
+                                           multi_household=True) or set())
+                except Exception as e:
+                    print(f"[sonos] subnet scan of {cidr} failed: {e}")
         return zones
 
     def rediscover(self):
