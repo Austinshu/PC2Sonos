@@ -17,10 +17,25 @@ your Windows default playback device -- see README.md.
 """
 
 import os
+import socket
 import sys
 import threading
 import time
 from pathlib import Path
+
+
+def _wait_for_http(port, stop_event, timeout=20):
+    """Block until something is accepting TCP connections on
+    127.0.0.1:<port> (our Flask server), or `timeout` seconds pass, or we
+    were asked to stop. Returns True if the port came up."""
+    deadline = time.monotonic() + timeout
+    while not stop_event.is_set() and time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return True
+        except OSError:
+            stop_event.wait(0.2)
+    return False
 
 
 def _setup_logging():
@@ -56,16 +71,40 @@ from diagnostics import install_global_exception_logging, system_snapshot  # noq
 import webapp  # noqa: E402
 
 
-def sonos_discovery_loop(stop_event):
+def _rediscover_guarded():
+    try:
+        speaker_mgr.rediscover()
+    except Exception as e:
+        # never let one bad discovery pass silently kill the loop --
+        # without this, a single hiccup means Sonos speakers are never
+        # found again for the rest of the run
+        print(f"[sonos] discovery loop error: {e}")
+
+
+def sonos_discovery_loop(stop_event, on_demand=False, ready_event=None):
+    """Keep the speaker list current.
+
+    Default ("auto"): a full re-scan every 15s.
+
+    "on_demand" (set once the configured default speaker came up at
+    launch): hold the one safety-net scan until audio to the default
+    speaker is underway (ready_event, set after stream_keeper's first
+    pass) so the scan stays out of the startup crunch -- it only
+    populates the dashboard with the other speakers, nothing time-
+    critical. Then idle, re-scanning only when the Rescan button asks.
+    The 20s is a fallback in case that first pass never completes."""
+    if on_demand:
+        (ready_event or stop_event).wait(20)
+        while not stop_event.is_set():
+            _rediscover_guarded()
+            while not stop_event.is_set() and not speaker_mgr.rescan_requested.wait(30):
+                pass
+            speaker_mgr.rescan_requested.clear()
+        return
+
     while not stop_event.is_set():
-        try:
-            speaker_mgr.rediscover()
-        except Exception as e:
-            # never let one bad discovery pass silently kill the loop --
-            # without this, a single hiccup means Sonos speakers are
-            # never found again for the rest of the run
-            print(f"[sonos] discovery loop error: {e}")
-        time.sleep(15)
+        _rediscover_guarded()
+        stop_event.wait(15)
 
 
 def main():
@@ -77,6 +116,10 @@ def main():
     install_global_exception_logging()
 
     stop_event = threading.Event()
+    # set after stream_keeper's first watchdog pass -- the on_demand
+    # discovery loop waits on this so its (non-urgent) full scan doesn't
+    # compete with getting audio to the default speaker at launch
+    first_tick_done = threading.Event()
 
     if sys.platform == "win32":
         # self-configure: if the virtual cable exists but isn't the
@@ -103,7 +146,22 @@ def main():
 
     start_audio_engine(stop_event)
 
-    disc_thread = threading.Thread(target=sonos_discovery_loop, args=(stop_event,), daemon=True)
+    # Fast path: if a default speaker is configured, reach it directly now
+    # (one unicast call) so the watchdog can start streaming to it in a
+    # second or two, instead of waiting out a full discovery pass.
+    primed_uid = None
+    try:
+        primed_uid = speaker_mgr.prime_default_speaker()
+    except Exception as e:
+        print(f"[sonos] default-speaker prime failed: {e}")
+
+    on_demand = (config.get("discovery_mode") == "on_demand" and primed_uid is not None)
+    if on_demand:
+        print("[sonos] discovery_mode=on_demand: background re-scanning off "
+              "(one safety-net pass, then only on request)")
+    disc_thread = threading.Thread(
+        target=sonos_discovery_loop,
+        args=(stop_event, on_demand, first_tick_done), daemon=True)
     disc_thread.start()
 
     def log_startup_snapshot():
@@ -124,18 +182,22 @@ def main():
 
     def stream_keeper():
         # The watchdog owns both jobs: the boot-time start (it force-
-        # starts each enabled speaker the first time discovery hands it
-        # to us -- no race against discovery timing) and staying alive
-        # (if Sonos ever drops the stream -- sleep, wifi blip, source
-        # switch and back -- it restarts it automatically instead of
-        # waiting for a human to re-toggle).
-        time.sleep(5)
+        # starts each enabled speaker the first time discovery -- or the
+        # default-speaker prime -- hands it to us) and staying alive (if
+        # Sonos ever drops the stream -- sleep, wifi blip, source switch
+        # and back -- it restarts it automatically, no re-toggle needed).
+        #
+        # First tick waits only until the HTTP server is actually
+        # accepting connections (a Sonos speaker told to play before then
+        # would fail to fetch the stream), not a fixed guess.
+        _wait_for_http(config["http_port"], stop_event, timeout=20)
         while not stop_event.is_set():
             try:
                 speaker_mgr.watchdog_tick(f"http://{get_lan_ip()}:{config['http_port']}")
             except Exception as e:
                 print(f"[sonos] watchdog error: {e}")
-            time.sleep(8)
+            first_tick_done.set()  # release the on_demand discovery loop
+            stop_event.wait(8)
 
     threading.Thread(target=stream_keeper, daemon=True).start()
 
@@ -145,23 +207,41 @@ def main():
     except Exception as e:
         print(f"[tray] system tray icon not available: {e}")
 
-    def open_dashboard_once_ready():
+    def announce_startup():
         # webapp.run_web() below blocks until the process exits, so this
-        # has to happen on its own thread -- and needs a moment first so
-        # the Flask server actually has a socket open to browse to.
-        # Previously the dashboard only opened automatically on the very
-        # first run (from setup_installer.py) or if someone found the
-        # tray icon's "Open Dashboard" item -- every other launch (every
-        # normal Windows login, via the Startup shortcut) started the app
-        # with no visible sign it had, unless you went looking for it.
-        time.sleep(1.5)
-        try:
-            import webbrowser
-            webbrowser.open(f"http://127.0.0.1:{config['http_port']}")
-        except Exception as e:
-            print(f"[web] couldn't auto-open the dashboard: {e}")
+        # runs on its own thread and waits for the HTTP server first.
+        #
+        # First launch on this machine: open the dashboard so setup (sync
+        # delay, which speakers) actually gets done. Every launch after
+        # that -- i.e. every normal Windows login via the Startup shortcut
+        # -- don't steal focus with a browser tab; just pop a tray balloon
+        # so there's still a visible sign it started. The dashboard is one
+        # click away on the tray icon whenever it's wanted.
+        first_run = not config.get("has_launched_before")
+        if not _wait_for_http(config["http_port"], stop_event, timeout=30):
+            return
+        if first_run:
+            try:
+                import webbrowser
+                webbrowser.open(f"http://127.0.0.1:{config['http_port']}")
+            except Exception as e:
+                print(f"[web] couldn't auto-open the dashboard: {e}")
+        else:
+            try:
+                import tray_icon
+                tray_icon.notify(
+                    f"Running. Dashboard: http://127.0.0.1:{config['http_port']}")
+            except Exception:
+                pass
+        if first_run:
+            config["has_launched_before"] = True
+            try:
+                from config import save_config
+                save_config(config)
+            except Exception as e:
+                print(f"[config] couldn't record first launch: {e}")
 
-    threading.Thread(target=open_dashboard_once_ready, daemon=True).start()
+    threading.Thread(target=announce_startup, daemon=True).start()
 
     print(f"[web] dashboard: http://127.0.0.1:{config['http_port']}")
     webapp.run_web()

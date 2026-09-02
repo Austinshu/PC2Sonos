@@ -226,6 +226,7 @@ class FakeZone:
 
 mgr = sonos_ctl.SpeakerManager()
 base = "http://192.168.1.5:5757"
+_wd_saved_speakers = dict(webapp.config["speakers"])  # restored at end of this block
 
 uid_a = "RINCON_AAAA0001"
 za = FakeZone(uid_a, f"{base}/stream/{uid_a}.wav", "STOPPED")  # our stream, dropped
@@ -265,6 +266,103 @@ webapp.config["speakers"][uid_c] = {"enabled": True, "volume": 50}
 mgr.watchdog_tick(base)
 assert zc.play_count == 1, "idle speaker should be claimed at boot"
 assert zb.play_count == 0, "actively-playing other source must stay untouched"
+webapp.config["speakers"] = _wd_saved_speakers  # don't leak fake speakers to config.json
+print("  OK")
+
+print("[test] startup: default speaker + new-speaker-enabled default...")
+_cfg = sonos_ctl.config
+_saved = {k: _cfg.get(k) for k in
+          ("default_speaker_ip", "default_speaker_uid", "new_speakers_default_enabled")}
+_saved_speakers = dict(_cfg["speakers"])  # these tests call save_config()
+try:
+    m2 = sonos_ctl.SpeakerManager()
+
+    # _default_enabled_for: follows the config flag, but the default
+    # speaker is always enabled
+    _cfg["new_speakers_default_enabled"] = False
+    _cfg["default_speaker_uid"] = "RINCON_DEFAULT"
+    assert m2._default_enabled_for("RINCON_OTHER") is False
+    assert m2._default_enabled_for("RINCON_DEFAULT") is True
+    _cfg["new_speakers_default_enabled"] = True
+    assert m2._default_enabled_for("RINCON_OTHER") is True
+
+    # prime_default_speaker: reachable IP -> registered + uid recorded
+    class FakeSoCo:
+        def __init__(self, ip):
+            if ip == "10.0.0.9":
+                raise OSError("unreachable")
+            self.ip_address = ip
+            self.uid = "RINCON_PRIMED" if ip == "10.0.0.5" else "RINCON_SOMEONEELSE"
+            self.player_name = "Primed"
+        @property
+        def group(self):
+            return None
+    _orig_soco = sonos_ctl.SoCo
+    sonos_ctl.SoCo = FakeSoCo
+    try:
+        _cfg["default_speaker_ip"] = ""
+        _cfg["default_speaker_uid"] = ""
+        assert m2.prime_default_speaker() is None, "blank IP -> nothing"
+
+        _cfg["default_speaker_ip"] = "10.0.0.5"
+        _cfg["default_speaker_uid"] = ""
+        assert m2.prime_default_speaker() == "RINCON_PRIMED"
+        assert _cfg["default_speaker_uid"] == "RINCON_PRIMED", "uid auto-recorded"
+        assert "RINCON_PRIMED" in m2.speakers
+        assert _cfg["speakers"]["RINCON_PRIMED"]["enabled"] is True
+
+        # IP now answers as a different device -> ignored
+        m2b = sonos_ctl.SpeakerManager()
+        _cfg["default_speaker_ip"] = "10.0.0.7"  # -> RINCON_SOMEONEELSE
+        assert m2b.prime_default_speaker() is None, "uid mismatch -> ignore the IP"
+
+        # unreachable IP -> None, no crash
+        m2c = sonos_ctl.SpeakerManager()
+        _cfg["default_speaker_uid"] = ""
+        _cfg["default_speaker_ip"] = "10.0.0.9"
+        assert m2c.prime_default_speaker() is None
+    finally:
+        sonos_ctl.SoCo = _orig_soco
+
+    # set_default_speaker: pin by uid (needs a known IP), and clear
+    m3 = sonos_ctl.SpeakerManager()
+    m3.speakers["RINCON_X"] = FakeZone("RINCON_X", "", "STOPPED")
+    m3.speakers["RINCON_X"].ip_address = "10.0.0.42"
+    assert m3.set_default_speaker("RINCON_X") is True
+    assert _cfg["default_speaker_ip"] == "10.0.0.42"
+    assert _cfg["default_speaker_uid"] == "RINCON_X"
+    assert m3.set_default_speaker("RINCON_UNKNOWN") is False, "no IP -> refuse"
+    assert m3.set_default_speaker(None) is True
+    assert _cfg["default_speaker_ip"] == "" and _cfg["default_speaker_uid"] == ""
+    print("  OK")
+finally:
+    _cfg.update(_saved)
+    _cfg["speakers"] = _saved_speakers
+    sonos_ctl.save_config(_cfg)
+
+print("[test] on_demand discovery loop: one pass, then idle until asked...")
+import main as _main  # noqa: E402
+_calls = []
+_orig_rd = sonos_ctl.speaker_mgr.rediscover
+sonos_ctl.speaker_mgr.rediscover = lambda: _calls.append(1)
+try:
+    _stop = threading.Event()
+    # shrink the 20s safety-net wait so the test is quick
+    _t = threading.Thread(target=_main.sonos_discovery_loop, args=(_stop, True), daemon=True)
+    # monkeypatch stop_event.wait so the initial 20s becomes instant
+    _real_wait = _stop.wait
+    _stop.wait = lambda t=None: _real_wait(0.05 if t == 20 else (t or 0))
+    _t.start()
+    time.sleep(0.6)
+    assert len(_calls) == 1, f"on_demand should scan exactly once up front, got {len(_calls)}"
+    sonos_ctl.speaker_mgr.rescan_requested.set()  # simulate the Rescan button
+    time.sleep(0.4)
+    assert len(_calls) == 2, "a rescan request should trigger exactly one more scan"
+    _stop.set()
+    sonos_ctl.speaker_mgr.rescan_requested.set()
+finally:
+    sonos_ctl.speaker_mgr.rediscover = _orig_rd
+    sonos_ctl.speaker_mgr.rescan_requested.clear()
 print("  OK")
 
 print("[test] diagnostics module...")

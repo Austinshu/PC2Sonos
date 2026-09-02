@@ -4,12 +4,28 @@ import webbrowser
 import pystray
 from PIL import Image, ImageDraw
 
+# Set once the tray icon is live, so other threads (main.announce_startup)
+# can pop a startup balloon without threading an icon reference around.
+_icon = None
+
 
 def make_image():
     img = Image.new("RGB", (64, 64), "black")
     d = ImageDraw.Draw(img)
     d.ellipse((8, 8, 56, 56), fill=(29, 185, 84))
     return img
+
+
+def notify(message, title="PC2Sonos"):
+    """Best-effort tray balloon. No-op if the tray isn't up or the
+    platform backend doesn't support notifications."""
+    icon = _icon
+    if icon is None:
+        return
+    try:
+        icon.notify(message, title)
+    except Exception:
+        pass
 
 
 def run_tray(config):
@@ -69,5 +85,7 @@ def run_tray(config):
         pystray.MenuItem("Export Diagnostics...", export_diagnostics),
         pystray.MenuItem("Quit PC2Sonos", quit_app),
     )
+    global _icon
     icon = pystray.Icon("pc2sonos", make_image(), "PC2Sonos", menu)
+    _icon = icon
     icon.run()

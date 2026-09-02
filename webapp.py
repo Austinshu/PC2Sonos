@@ -156,8 +156,16 @@ DASHBOARD_HTML = """
 </div>
 
 <div class="card">
-  <label style="margin-bottom:0;">Sonos speakers</label>
+  <div style="display:flex; align-items:center; justify-content:space-between;">
+    <label style="margin-bottom:0;">Sonos speakers</label>
+    <button onclick="rescan()" style="background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;">Rescan</button>
+  </div>
+  <div style="font-size:11px; color:#777; margin:2px 0 8px;">
+    &#9733; = default speaker: streamed to the instant PC2Sonos starts, before
+    a network scan finishes. Click a star to set it.
+  </div>
   <div id="speakers"></div>
+  <div id="rescanResult" style="margin-top:6px; font-size:12px; color:#888;"></div>
   <details style="margin-top:12px; font-size:12px; color:#aaa;">
     <summary style="cursor:pointer; color:#ccc;">Speakers not showing up? (different subnet / IoT VLAN)</summary>
     <div style="margin-top:10px; line-height:1.5;">
@@ -229,7 +237,11 @@ async function refresh(){
     const div = document.createElement('div');
     div.className = 'speaker';
     const grouped = s.grouped_with && s.grouped_with.length;
+    const star = s.is_default ? '&#9733;' : '&#9734;';
+    const starTitle = s.is_default ? 'Default speaker (click to unset)' : 'Set as default speaker';
     div.innerHTML = `
+      <span onclick="setDefault('${s.uid}', ${s.is_default})" title="${starTitle}"
+            style="cursor:pointer; font-size:16px; color:${s.is_default ? '#f5c518' : '#666'};">${star}</span>
       <input type="checkbox" class="toggle" ${s.enabled ? 'checked' : ''} onchange="toggle('${s.uid}', this.checked)">
       <span class="name">${s.name}${grouped ? ` <span style="font-weight:400; color:#888; font-size:12px;">(grouped with ${s.grouped_with.join(', ')} &mdash; this also controls them)</span>` : ''}</span>
       <input type="range" min="0" max="100" value="${s.volume}" onchange="setVol('${s.uid}', this.value)">
@@ -238,6 +250,23 @@ async function refresh(){
     `;
     el.appendChild(div);
   });
+}
+async function rescan(){
+  const el = document.getElementById('rescanResult');
+  el.textContent = 'Scanning the network...';
+  try {
+    const res = await fetch('/api/rescan', {method:'POST'});
+    const data = await res.json();
+    el.textContent = 'Found ' + data.found + ' speaker' + (data.found === 1 ? '' : 's') + '.';
+  } catch (e) {
+    el.textContent = 'Scan failed: ' + e;
+  }
+  refresh();
+}
+async function setDefault(uid, isDefault){
+  await fetch('/api/default_speaker', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({uid: isDefault ? null : uid})});
+  refresh();
 }
 async function loadSeedIps(){
   const res = await fetch('/api/sonos_seed');
@@ -438,6 +467,29 @@ def api_sonos_seed():
     except Exception as e:
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
     return jsonify({"ok": True, "found": len(speaker_mgr.list())})
+
+
+@app.route("/api/rescan", methods=["POST"])
+def api_rescan():
+    """One immediate discovery pass. Useful in auto mode (skip the wait
+    for the next 15s tick) and required in on_demand mode (the background
+    loop is idle until asked)."""
+    try:
+        speaker_mgr.request_rescan()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
+    return jsonify({"ok": True, "found": len(speaker_mgr.list())})
+
+
+@app.route("/api/default_speaker", methods=["POST"])
+def api_default_speaker():
+    """Pin the speaker PC2Sonos streams to immediately at launch (by its
+    current IP), or clear it with {"uid": null}."""
+    data = request.get_json(force=True)
+    uid = data.get("uid")
+    if speaker_mgr.set_default_speaker(uid):
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "no known IP for that speaker yet"}), 400
 
 
 @app.route("/api/speaker/<uid>/volume", methods=["POST"])

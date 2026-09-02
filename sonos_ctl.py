@@ -163,6 +163,54 @@ class SpeakerManager:
         # configured seed is down, any other speaker we've seen still gets
         # us back to the whole household.
         self._known_ips = set()
+        # set by the dashboard's "Rescan" button (and used to break the
+        # discovery loop out of its wait in on_demand mode)
+        self.rescan_requested = threading.Event()
+
+    def _default_enabled_for(self, uid):
+        """Whether a newly-seen speaker should start out enabled. The
+        configured default speaker always is; everything else follows
+        new_speakers_default_enabled (true on a fresh install)."""
+        if uid and uid == config.get("default_speaker_uid"):
+            return True
+        return bool(config.get("new_speakers_default_enabled", True))
+
+    def prime_default_speaker(self):
+        """Reach config['default_speaker_ip'] directly and register it,
+        so the watchdog can boot-start it without waiting for a discovery
+        pass. Returns the uid on success, None otherwise (blank config,
+        speaker unreachable, or the IP now answers as a different device).
+
+        Safe to call repeatedly -- it's a no-op once the speaker is
+        already known."""
+        ip = str(config.get("default_speaker_ip") or "").strip()
+        if not ip:
+            return None
+        try:
+            zone = SoCo(ip)
+            uid = zone.uid
+        except Exception as e:
+            print(f"[sonos] default speaker {ip} not reachable at launch: {e}")
+            return None
+
+        expected = str(config.get("default_speaker_uid") or "").strip()
+        if expected and expected != uid:
+            print(f"[sonos] {ip} is now {uid}, not the configured default "
+                  f"speaker {expected} -- ignoring it, letting discovery take over")
+            return None
+
+        with self._lock:
+            if not expected:
+                config["default_speaker_uid"] = uid
+                save_config(config)
+            self._known_ips.add(ip)
+            self._refresh_zone_meta(uid, zone)
+            self.speakers.setdefault(uid, zone)
+            config["speakers"].setdefault(
+                uid, {"enabled": True, "volume": 50})["enabled"] = True
+            save_config(config)
+        print(f"[sonos] default speaker ready at launch: {self.names.get(uid, uid)}")
+        return uid
 
     def _discover_zones(self):
         """Return the set of Sonos zones to track.
@@ -251,7 +299,10 @@ class SpeakerManager:
                             # the zone until someone actually touches the
                             # slider). 50% is a sane, unsurprising starting
                             # point for every newly-discovered speaker.
-                            config["speakers"][uid] = {"enabled": True, "volume": 50}
+                            config["speakers"][uid] = {
+                                "enabled": self._default_enabled_for(uid),
+                                "volume": 50,
+                            }
                         print(f"[sonos] found: {self.names.get(uid, uid)}")
             save_config(config)
         except Exception as e:
@@ -303,6 +354,8 @@ class SpeakerManager:
                     "enabled": cfg.get("enabled", True),
                     "volume": cfg.get("volume", 50),
                     "streaming": self.streams.get(uid, False),
+                    "ip": getattr(zone, "ip_address", "") or "",
+                    "is_default": uid == config.get("default_speaker_uid"),
                     # surfaced so the dashboard can show "grouped with X, Y"
                     # -- toggling any one of them affects the whole group
                     # (see _effective_zone), so the UI shouldn't imply
@@ -321,6 +374,32 @@ class SpeakerManager:
             self.start_stream(uid, zone, base_url)
         else:
             self.stop_stream(uid, zone)
+
+    def set_default_speaker(self, uid):
+        """Pin (or, with a falsy uid, clear) the speaker PC2Sonos talks
+        to directly at launch. Returns True on success, False if the uid
+        isn't a speaker we currently know an IP for."""
+        with self._lock:
+            if not uid:
+                config["default_speaker_ip"] = ""
+                config["default_speaker_uid"] = ""
+                save_config(config)
+                return True
+            ip = getattr(self.speakers.get(uid), "ip_address", "") or ""
+            if not ip:
+                return False
+            config["default_speaker_ip"] = ip
+            config["default_speaker_uid"] = uid
+            config["speakers"].setdefault(
+                uid, {"enabled": True, "volume": 50})["enabled"] = True
+            save_config(config)
+        return True
+
+    def request_rescan(self):
+        """One immediate discovery pass, plus a nudge for the on_demand
+        loop (which is otherwise idle)."""
+        self.rescan_requested.set()
+        self.rediscover()
 
     def set_volume(self, uid, volume):
         zone = self.speakers.get(uid)

@@ -169,7 +169,10 @@ def get_lan_ip():
     different NICs with different IPs. Ask the routing table which
     source IP it would use to reach an actual speaker first, and only
     fall back to the internet-facing IP when we don't know one yet."""
-    targets = list(config.get("sonos_seed_ips") or [])
+    targets = []
+    if config.get("default_speaker_ip"):
+        targets.append(config["default_speaker_ip"])
+    targets += list(config.get("sonos_seed_ips") or [])
     try:
         from sonos_ctl import speaker_mgr
         targets += sorted(speaker_mgr._known_ips)
