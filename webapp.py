@@ -129,6 +129,13 @@ DASHBOARD_HTML = """
 <div class="card">
   <label>PC speaker output device &mdash; the real speakers/headphones PC2Sonos should play the delayed audio to (virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list)</label>
   <select id="renderDevice" onchange="setDevice()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
+  <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a; font-size:11px; color:#999; line-height:1.5;">
+    The volume boost and EQ below can push your speakers harder than their
+    intended level, and pushing either far enough can stress or damage
+    underpowered speakers/amps over time. <strong>The defaults (100%
+    boost, 0dB EQ) are what we recommend</strong> -- adjusting past them
+    is at your own risk to your hardware, not just audio quality.
+  </div>
   <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
     <label>PC speaker volume boost &mdash; Windows' own volume only controls what PC2Sonos captures, not what this device plays back; use this if an aux/line-out speaker is too quiet even at 100% Windows volume</label>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -151,21 +158,21 @@ DASHBOARD_HTML = """
     <label>PC speaker EQ &mdash; bass/mid/treble for the local speaker path only (Sonos speakers keep their own EQ in the Sonos app)</label>
     <div id="eqSliders" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;">
       <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
-        <input type="range" min="-12" max="12" step="1" id="eqBass" value="{{eq_bass_db}}"
+        <input type="range" min="-24" max="24" step="1" id="eqBass" value="{{eq_bass_db}}"
                oninput="setLocalEq()" orient="vertical"
                style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
         <span id="eqBassVal" style="font-size:11px; color:#aaa;">{{eq_bass_db}} dB</span>
         <span style="font-size:11px; color:#777;">Bass</span>
       </div>
       <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
-        <input type="range" min="-12" max="12" step="1" id="eqMid" value="{{eq_mid_db}}"
+        <input type="range" min="-24" max="24" step="1" id="eqMid" value="{{eq_mid_db}}"
                oninput="setLocalEq()" orient="vertical"
                style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
         <span id="eqMidVal" style="font-size:11px; color:#aaa;">{{eq_mid_db}} dB</span>
         <span style="font-size:11px; color:#777;">Mid</span>
       </div>
       <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
-        <input type="range" min="-12" max="12" step="1" id="eqTreble" value="{{eq_treble_db}}"
+        <input type="range" min="-24" max="24" step="1" id="eqTreble" value="{{eq_treble_db}}"
                oninput="setLocalEq()" orient="vertical"
                style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
         <span id="eqTrebleVal" style="font-size:11px; color:#aaa;">{{eq_treble_db}} dB</span>
@@ -696,16 +703,19 @@ def api_set_local_gain():
 
 @app.route("/api/local_eq", methods=["POST"])
 def api_set_local_eq():
-    # Each band is dB, clamped to +/-12 -- read fresh every chunk in
+    # Each band is dB, clamped to +/-24 -- read fresh every chunk in
     # audio_engine's _ThreeBandEQ, so this takes effect immediately with
     # no render restart. Local speaker path only; never touches the
-    # Sonos-facing stream.
+    # Sonos-facing stream. The EQ stage soft-limits its own output (see
+    # _soft_limit in audio_engine.py), so a big boost on one band
+    # compresses gracefully instead of hard-clipping before the gain
+    # stage's limiter would even get a chance to help.
     data = request.get_json(force=True)
     for key, config_key in (("bass", "local_eq_bass_db"),
                              ("mid", "local_eq_mid_db"),
                              ("treble", "local_eq_treble_db")):
         if key in data:
-            config[config_key] = max(-12.0, min(12.0, float(data[key])))
+            config[config_key] = max(-24.0, min(24.0, float(data[key])))
     save_config(config)
     return jsonify({"ok": True})
 

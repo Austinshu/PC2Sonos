@@ -340,30 +340,54 @@ class _NoRenderDevice(Exception):
 _GAIN_KNEE = 0.7  # start compressing at 70% of full scale (~ -3dBFS)
 
 
-def _apply_local_gain(pcm_bytes, gain):
-    """Amplifies 16-bit PCM by `gain`, soft-limiting instead of hard-
-    clipping as the signal approaches full scale.
+def _soft_limit(normalized):
+    """normalized: a float array of samples roughly in [-1, 1] but
+    possibly well beyond it (e.g. after a large gain or EQ boost).
+    Returns a float array softly compressed back toward [-1, 1] instead
+    of hard-clipped.
 
-    A plain linear multiply (audioop.mul) hard-clips: the instant any
-    sample crosses the ceiling, it gets slammed flat rather than
-    compressed, which sounds like a sudden jump into harsh distortion --
-    disproportionately loud to the ear regardless of how small the
-    nominal gain increase was. That bites hard here because a lot of
-    real source audio already sits close to full scale (apps commonly
-    master near 0dBFS), so even a modest boost could push a meaningful
-    chunk of samples straight into that wall. A soft knee lets loud
-    peaks compress gradually above _GAIN_KNEE instead, so raising the
-    slider actually feels like a smooth volume increase across its
-    whole range instead of "clean, then suddenly blown out."""
-    arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) * (gain / 32768.0)
-    mag = np.abs(arr)
+    A plain hard clip -- flattening anything over the ceiling straight
+    to the ceiling -- turns the INSTANT any sample crosses it into a
+    jump from clean to harshly distorted, disproportionately loud/harsh
+    to the ear regardless of how small the push past the ceiling was.
+    This is shared by every stage that can push a sample past full scale
+    (the volume boost, and the EQ boosting a band hard enough to do the
+    same on its own) so nothing downstream ever has to clean up after a
+    hard clip that already happened upstream -- once a signal's been
+    hard-clipped, that distortion can't be undone later in the chain.
+
+    Uses excess/(excess+width) rather than tanh(excess/width): tanh
+    saturates to (numerically) exactly 1.0 within about 3-4x the knee
+    width, so anything past that -- easily reached by a large EQ boost
+    stacked on already-loud audio, verified directly: a +24dB bass boost
+    on a 90%-of-full-scale tone pinned 77% of all samples to the exact
+    same ceiling value with tanh -- collapses to one repeated value for
+    a long stretch, which is audibly indistinguishable from a hard clip
+    no matter how smooth the math generating it was. The rational curve
+    below never actually reaches 1.0 for any finite input, so it keeps
+    differentiating samples (and therefore keeps sounding like
+    compression, not a flat top) even at extreme gain."""
+    mag = np.abs(normalized)
     over = mag > _GAIN_KNEE
+    out = np.array(normalized, copy=True)
     if np.any(over):
+        width = 1.0 - _GAIN_KNEE
         excess = mag[over] - _GAIN_KNEE
-        compressed = _GAIN_KNEE + np.tanh(excess / (1.0 - _GAIN_KNEE)) * (1.0 - _GAIN_KNEE)
-        arr[over] = np.sign(arr[over]) * compressed
-    arr = np.clip(arr, -1.0, 1.0) * 32767.0
-    return arr.astype(np.int16).tobytes()
+        compressed = _GAIN_KNEE + (excess / (excess + width)) * width
+        out[over] = np.sign(normalized[over]) * compressed
+    return np.clip(out, -1.0, 1.0)
+
+
+def _apply_local_gain(pcm_bytes, gain):
+    """Amplifies 16-bit PCM by `gain`, soft-limiting (see _soft_limit)
+    instead of hard-clipping as the signal approaches full scale. Real
+    source audio commonly already sits close to full scale (apps master
+    near 0dBFS), so even a modest boost could push a meaningful chunk of
+    samples straight into a hard ceiling -- the soft knee means raising
+    the slider actually feels like a smooth volume increase across its
+    whole range instead of clean, then suddenly blown out."""
+    arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) * (gain / 32768.0)
+    return (_soft_limit(arr) * 32767.0).astype(np.int16).tobytes()
 
 
 # Bass/mid/treble EQ for the LOCAL speaker path only. Sonos speakers
@@ -496,7 +520,14 @@ class _ThreeBandEQ:
                 x = bass_f.process(col[i])
                 x = mid_f.process(x)
                 outcol[i] = treble_f.process(x)
-        return np.clip(out, -32768, 32767).astype(np.int16).tobytes()
+        # soft-limit, not hard-clip: a large boost on one band can push
+        # samples well past full scale on its own, and a hard clip here
+        # would introduce harsh distortion before the gain stage's own
+        # soft limiter (_apply_local_gain) ever gets a chance to help --
+        # once a sample's been hard-clipped, nothing downstream can
+        # undo it, so this has to be soft-limited at the source
+        limited = _soft_limit((out / 32768.0).astype(np.float32))
+        return (limited * 32767.0).astype(np.int16).tobytes()
 
 
 def render_loop(stop_event):

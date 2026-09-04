@@ -124,11 +124,22 @@ independent volume control.
 
 There's also a **bass/mid/treble EQ** right below it, local speaker path
 only (Sonos speakers keep their own EQ in the Sonos app) -- a low shelf
-at 200Hz, a peak at 1000Hz, and a high shelf at 5000Hz, each &plusmn;12dB.
+at 200Hz, a peak at 1000Hz, and a high shelf at 5000Hz, each up to
+&plusmn;24dB: a fully adjustable bass shelf well beyond the fixed,
+modest boost most built-in Windows/driver audio enhancements offer.
 0dB on all three is a true passthrough; a warning appears past
 &plusmn;6dB on any band, since a plain 3-band shelf/peak EQ pushed that
 far starts sounding like a different speaker rather than "more/less
-bass," and can introduce noise.
+bass." The EQ soft-limits its own output too (same as the boost), so
+even a large boost on one band compresses gracefully instead of
+hard-clipping.
+
+**100% boost / 0dB EQ (the defaults) is what we recommend.** Both
+controls go well past that on purpose, for cases like an underpowered
+aux speaker that genuinely needs it -- but pushing either far enough can
+stress or damage underpowered speakers/amps over time, not just change
+how the audio sounds. Adjusting past the defaults is at your own risk to
+your hardware.
 
 ### Optional: start faster after a reboot
 

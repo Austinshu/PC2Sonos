@@ -212,10 +212,10 @@ r = client.post("/api/local_eq", json={"bass": 6, "mid": -3, "treble": 999})  # 
 assert r.status_code == 200
 assert webapp.config["local_eq_bass_db"] == 6.0
 assert webapp.config["local_eq_mid_db"] == -3.0
-assert webapp.config["local_eq_treble_db"] == 12.0, "EQ bands must clamp to +/-12dB"
+assert webapp.config["local_eq_treble_db"] == 24.0, "EQ bands must clamp to +/-24dB"
 r = client.post("/api/local_eq", json={"bass": 0, "mid": 0, "treble": 0})  # restore flat for later tests
 assert webapp.config["local_eq_bass_db"] == 0.0
-print("  /api/local_eq OK (clamped to +/-12dB)")
+print("  /api/local_eq OK (clamped to +/-24dB)")
 
 print("[test] _ThreeBandEQ: flat is a byte-exact passthrough, each band only affects its own range...")
 _RATE = 44100
@@ -250,6 +250,19 @@ _treble_boost = audio_engine._ThreeBandEQ(_RATE, 2)
 treble_after = _rms(_treble_boost.process(_treble_tone, 0.0, 0.0, 12.0))
 assert treble_after > treble_before * 1.5, "boosting treble +12dB should strongly affect an 8000Hz tone"
 print("  OK (bass/treble shelves are frequency-selective, flat setting is a true no-op)")
+
+# an extreme boost on an already-loud signal is exactly the "make it
+# shudder" case a hard clip would ruin -- confirm the EQ's own output
+# stays soft-limited (no sample pinned exactly at the ceiling), not
+# hard-clipped, at the maximum +24dB the dashboard now allows
+_loud_bass_tone = (_np.sin(_np.linspace(0, 2 * _np.pi * 30, int(_RATE * 0.3), False))
+                    * 0.9 * 32767).astype(_np.int16)
+_loud_bass_tone = _np.repeat(_loud_bass_tone[:, None], 2, axis=1).flatten().tobytes()
+_extreme_eq = audio_engine._ThreeBandEQ(_RATE, 2)
+_extreme_out = _np.frombuffer(_extreme_eq.process(_loud_bass_tone, 24.0, 0.0, 0.0), dtype=_np.int16)
+assert (_np.abs(_extreme_out) >= 32767).sum() == 0, \
+    "even a +24dB boost on already-loud audio must soft-limit, never hard-clip to the ceiling"
+print("  OK (a +24dB boost on loud audio soft-limits, doesn't hard-clip)")
 
 r = client.get("/api/audio_sessions")
 body = r.get_json()
