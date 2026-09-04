@@ -541,10 +541,18 @@ import diagnostics  # noqa: E402
 
 # system_snapshot() must never raise, even on a non-Windows box with no
 # real Sonos/audio hardware -- every Windows-only lookup inside it is
-# supposed to degrade to a "n/a (not Windows)" string instead.
+# supposed to degrade to a "n/a (not Windows)" string instead. On an
+# actual Windows box (every real PC2Sonos install, and this test suite's
+# own dev machine), those same lookups correctly return real data
+# instead -- so the assertion has to check for the opposite thing
+# depending on which platform is actually running the suite.
 snap = diagnostics.system_snapshot()
 assert isinstance(snap, str) and "OS:" in snap and "LAN IP:" in snap
-assert "not Windows" in snap  # confirms the win32-only branches are hit and handled
+if sys.platform == "win32":
+    assert "not Windows" not in snap, \
+        "on Windows, every lookup should return real data, never the non-Windows placeholder"
+else:
+    assert "not Windows" in snap  # confirms the win32-only branches are hit and handled
 print("  system_snapshot() OK")
 
 zpath = diagnostics.export_diagnostics_zip()
@@ -631,11 +639,11 @@ hits_noise = calibration.find_echo_times(noise_only, sig, RATE)
 assert len(hits_noise) < 2, f"noise-only recording should not yield 2 confident hits, got {hits_noise}"
 print("  correctly reports no confident match on pure noise OK")
 
-print("[test] run_calibration() fails clean with no Sonos speakers enabled...")
+print("[test] run_calibration_silent() fails clean with no Sonos speakers enabled...")
 import sonos_ctl as _sc  # noqa: E402
 _sc.speaker_mgr.speakers.clear()
 webapp.config["speakers"].clear()
-calibration.run_calibration()
+calibration.run_calibration_silent()
 st = calibration.get_status()
 assert st["state"] == "error" and "Enable at least one Sonos speaker" in st["detail"], st
 print("  OK")
