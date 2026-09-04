@@ -185,6 +185,37 @@ r = client.post("/api/local_gain", json={"percent": 100})  # restore default for
 assert webapp.config["local_render_gain"] == 1.0
 print("  /api/local_gain OK (clamped to 0-500%)")
 
+print("[test] /api/master_volume: scales enabled speakers + PC boost, leaves disabled speakers alone...")
+import types as _mv_types  # noqa: E402
+_mv_on = _mv_types.SimpleNamespace(volume=0)
+_mv_off = _mv_types.SimpleNamespace(volume=0)
+webapp.speaker_mgr.speakers["MV_ON"] = _mv_on
+webapp.speaker_mgr.speakers["MV_OFF"] = _mv_off
+_mv_saved_speakers_cfg = dict(webapp.config["speakers"])
+webapp.config["speakers"]["MV_ON"] = {"enabled": True, "volume": 80}
+webapp.config["speakers"]["MV_OFF"] = {"enabled": False, "volume": 80}
+webapp.config["local_render_gain"] = 2.0  # 200%
+try:
+    r = client.post("/api/master_volume", json={"percent": 50})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True and body["local_gain_percent"] == 100, body
+    assert webapp.config["speakers"]["MV_ON"]["volume"] == 40, \
+        "an enabled speaker's volume should scale with the master percentage"
+    assert _mv_on.volume == 40, "the scaled volume must actually reach the zone, not just config"
+    assert webapp.config["speakers"]["MV_OFF"]["volume"] == 80, \
+        "a disabled speaker must be left untouched by master volume"
+    assert webapp.config["local_render_gain"] == 1.0, "the PC boost should scale by the same percentage"
+
+    r = client.post("/api/master_volume", json={"percent": 999})  # clamps to 100, doesn't error
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+finally:
+    del webapp.speaker_mgr.speakers["MV_ON"]
+    del webapp.speaker_mgr.speakers["MV_OFF"]
+    webapp.config["speakers"] = _mv_saved_speakers_cfg
+    webapp.config["local_render_gain"] = 1.0
+print("  OK")
+
 import numpy as _np  # noqa: E402
 import struct as _struct  # noqa: E402
 

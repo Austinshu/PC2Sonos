@@ -207,6 +207,20 @@ DASHBOARD_HTML = """
     &#9733; = default speaker: streamed to the instant PC2Sonos starts, before
     a network scan finishes. Click a star to set it.
   </div>
+  <div style="padding:10px 0 12px; border-bottom:1px solid #232323; margin-bottom:4px;">
+    <label style="margin-bottom:6px;">Turn everything down together &mdash; scales every enabled Sonos speaker and the PC boost from wherever they're each set right now (individual volumes below stay fully adjustable afterward)</label>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <input type="range" min="0" max="100" step="1" id="masterVolume" value="100"
+             oninput="document.getElementById('masterVolumeNum').value = this.value; paintRange(this)"
+             style="flex:1; min-width:150px;">
+      <input type="number" min="0" max="100" step="1" id="masterVolumeNum" value="100"
+             oninput="const s=document.getElementById('masterVolume'); s.value=this.value; paintRange(s)"
+             style="width:60px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:8px;">
+      <span>%</span>
+      <button onclick="applyMasterVolume()">Apply</button>
+    </div>
+    <div id="masterVolumeResult" style="margin-top:6px; font-size:12px; color:#888;"></div>
+  </div>
   <div id="speakers"></div>
   <div id="rescanResult" style="margin-top:6px; font-size:12px; color:#888;"></div>
   <details style="margin-top:12px; font-size:12px; color:#aaa;">
@@ -226,6 +240,11 @@ DASHBOARD_HTML = """
       <div id="seedResult" style="margin-top:8px; color:#888;"></div>
     </div>
   </details>
+</div>
+
+<div class="card">
+  <label>PC speaker output device &mdash; this is the key setting for keeping your PC's own speakers in sync with Sonos: it's WHICH physical speaker/headphones PC2Sonos plays the delayed audio to. PC2Sonos auto-picks the first real output it finds, which is usually right -- but if your PC speakers don't seem to be playing the delayed feed at all, or you have more than one output connected (headphones + speakers, a monitor's speakers, etc.), check this first before touching anything else below. (Virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list -- they're never a real speaker.)</label>
+  <select id="renderDevice" onchange="setDevice()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
 </div>
 
 <div class="card">
@@ -259,14 +278,10 @@ DASHBOARD_HTML = """
 
 <details class="card" style="padding:0;">
   <summary style="cursor:pointer; padding:16px 18px; font-size:13px; color:#ccc; font-weight:600;">
-    Advanced: PC speaker output &amp; audio tuning
+    Advanced: volume boost, EQ &amp; audio source
   </summary>
-  <div style="padding:0 18px 16px;">
-    <div style="padding-top:4px;">
-      <label>PC speaker output device &mdash; the real speakers/headphones PC2Sonos should play the delayed audio to (virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list)</label>
-      <select id="renderDevice" onchange="setDevice()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
-    </div>
-    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a; font-size:11px; color:#999; line-height:1.5;">
+  <div style="padding:14px 18px 16px;">
+    <div style="font-size:11px; color:#999; line-height:1.5;">
       The volume boost and EQ below can push your speakers harder than their
       intended level, and pushing either far enough can stress or damage
       underpowered speakers/amps over time. <strong>The defaults (100%
@@ -466,6 +481,28 @@ async function toggle(uid, enabled){
 }
 async function setVol(uid, volume){
   await fetch('/api/speaker/' + uid + '/volume', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({volume: parseInt(volume)})});
+}
+async function applyMasterVolume(){
+  const el = document.getElementById('masterVolumeResult');
+  const percent = parseInt(document.getElementById('masterVolume').value);
+  el.textContent = 'Scaling everything to ' + percent + '%...';
+  const res = await fetch('/api/master_volume', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({percent})});
+  const data = await res.json();
+  if (!data.ok) { el.textContent = 'Failed.'; return; }
+  // this is a one-shot action, not a persistent position -- reset to
+  // 100 so the next press always scales from the real current values,
+  // never compounds off wherever the slider was last left
+  const masterSlider = document.getElementById('masterVolume');
+  masterSlider.value = 100;
+  document.getElementById('masterVolumeNum').value = 100;
+  paintRange(masterSlider);
+  if (data.local_gain_percent !== undefined) {
+    document.getElementById('localGain').value = data.local_gain_percent;
+    syncLocalGain('slider');
+  }
+  el.textContent = 'Done -- individual volumes below are updated.';
+  refresh();
 }
 function syncDelay(source){
   const slider = document.getElementById('delay');
@@ -776,6 +813,29 @@ def api_set_volume(uid):
     data = request.get_json(force=True)
     speaker_mgr.set_volume(uid, data.get("volume", 50))
     return jsonify({"ok": True})
+
+
+@app.route("/api/master_volume", methods=["POST"])
+def api_master_volume():
+    """Scale every enabled Sonos speaker's volume AND the PC speaker
+    boost down together in one action, from whatever they're each
+    currently set to -- not a live/continuous control, so there's no
+    "current master position" to drift out of sync: every press scales
+    from the real values at that moment and writes real new values via
+    the same per-speaker/local-gain paths the individual controls use.
+    Deliberately one-directional (0-100%, never boosts past what's
+    already configured) so this can never push the PC boost past a
+    level the user hasn't already explicitly approved."""
+    data = request.get_json(force=True)
+    percent = max(0, min(100, int(data.get("percent", 100))))
+    scale = percent / 100.0
+    for s in speaker_mgr.list():
+        if s["enabled"]:
+            speaker_mgr.set_volume(s["uid"], round(s["volume"] * scale))
+    new_gain_percent = round(config.get("local_render_gain", 1.0) * 100 * scale)
+    config["local_render_gain"] = new_gain_percent / 100.0
+    save_config(config)
+    return jsonify({"ok": True, "local_gain_percent": new_gain_percent})
 
 
 @app.route("/api/delay", methods=["POST"])
