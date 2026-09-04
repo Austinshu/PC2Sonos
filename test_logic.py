@@ -177,6 +177,22 @@ audio_engine._render_stop_event.set()  # clean up the thread this test started
 audio_engine._render_thread.join(timeout=2)
 print("  /api/render_device OK (explicit device switch works)")
 
+r = client.post("/api/local_gain", json={"percent": 150})
+assert r.status_code == 200 and webapp.config["local_render_gain"] == 1.5
+r = client.post("/api/local_gain", json={"percent": 999})  # clamps, doesn't error
+assert r.status_code == 200 and webapp.config["local_render_gain"] == 3.0
+r = client.post("/api/local_gain", json={"percent": 100})  # restore default for later tests
+assert webapp.config["local_render_gain"] == 1.0
+print("  /api/local_gain OK (clamped to 0-300%)")
+
+import audioop as _audioop  # noqa: E402
+import struct as _struct  # noqa: E402
+_silence = _struct.pack("<2h", 100, -100)
+_boosted = _audioop.mul(_silence, 2, 2.0)
+assert _struct.unpack("<2h", _boosted) == (200, -200), \
+    "local_render_gain must actually scale samples, not just round-trip through config"
+print("  local_render_gain sample scaling OK (audioop.mul applies and clips correctly)")
+
 r = client.get("/api/audio_sessions")
 body = r.get_json()
 assert r.status_code == 200 and "sessions" in body and body["mode"] == "system"

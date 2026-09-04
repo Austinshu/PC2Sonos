@@ -3,19 +3,29 @@
 Free, local software that replaces the flaky "Sonos desktop app + separate
 streaming tool" combo with one thing that just runs at startup:
 
-- Discovers every Sonos speaker on your network automatically.
-- Streams your PC's system audio to whichever ones you enable, with
-  individual volume control per speaker.
+- Discovers every Sonos speaker on your network automatically, and can
+  still find them with one manual step if they're on a separate
+  subnet/IoT VLAN that normal discovery can't reach.
+- Streams your PC's audio to whichever ones you enable, with individual
+  volume control per speaker.
+- Choose what gets streamed: the whole system (default), or just one
+  application's audio, so the rest of your PC's sound stays off Sonos.
 - Delays your PC's *own* local speakers to match Sonos's playback delay,
-  so the two don't echo each other -- you set the offset once with a
-  slider and it stays put.
+  so the two don't echo each other -- you set the offset once (or let
+  auto-calibration find it) and it stays put, with a periodic background
+  resync so it doesn't quietly drift over a long-running session.
+- A volume boost for a quiet aux/line-out PC speaker, independent of
+  Windows' own volume (which only controls what gets captured, not what
+  that device plays back).
+- Checks once per launch whether a newer version exists and shows a
+  download link if so -- see "Why the update checker exists" below.
 - Starts automatically when you log into Windows. No app to remember to
   open.
 
 Everything runs on your machine. There's no cloud dependency, no
 telemetry, no account, and no license check -- it's a local web dashboard
 (default `http://127.0.0.1:5757`) plus a background audio/streaming
-engine, fully offline from the moment it's installed.
+engine, fully offline apart from that one-time-per-launch update check.
 
 ## Why the delay slider exists
 
@@ -27,6 +37,36 @@ effect: without it, your PC's local speakers play instantly while Sonos
 lags behind, so you hear the same audio twice. PC2Sonos holds your local
 speaker output back by a matching amount so both play together -- same
 idea as the "audio delay" / lip-sync offset setting on an AV receiver.
+
+## Why the update checker exists
+
+The early releases of PC2Sonos were, honestly, not good at the one thing
+the app exists to do: sync. The delay calibration was rough, the render
+path had format/resample bugs that threw timing off, and there was no
+mechanism to correct for a long-running session's audio gradually
+drifting out of sync with Sonos -- so "close enough" on day one could be
+audibly off by the end of the day. A lot of the work since then has gone
+directly at that problem: more accurate silent calibration (measured from
+Sonos's own playback clock, not guesswork), fixes to the capture/render
+pipeline's sample-rate and format handling, and a background watchdog
+that now periodically resyncs Sonos automatically so drift never has a
+chance to accumulate. The practical result is that most setups can now
+land right around **0ms** of extra delay and stay there indefinitely,
+instead of needing a compensating offset that only stayed correct for a
+few minutes.
+
+None of that helps anyone still running an old install, though. This app
+has no telemetry and no account system by design -- which also means
+there's no way to reach existing users to tell them "the sync problem you
+gave up on is fixed now." A silent, no-account tool that never phones
+home is also a tool with no way to say "hey, this got better." The update
+checker is the one deliberate exception to "fully offline": once per
+launch, it makes a single request to GitHub's public release API (no
+data about you or your setup goes with it) to compare your version
+against the latest release, and shows a banner with a direct download
+link if you're behind. After that one check, it's silent again for the
+rest of the session -- no polling, no background checking, nothing else
+sent anywhere.
 
 ## One-time setup
 
@@ -48,6 +88,36 @@ quietly in the system tray, and every Sonos speaker you enabled starts
 receiving audio. The dashboard opens in your browser on the very first
 run only; after that a small tray notification just confirms it started,
 and the dashboard is one click away on the tray icon.
+
+### Optional: stream just one app instead of the whole system
+
+By default PC2Sonos streams everything your PC plays, the same way the
+underlying virtual-cable approach always has. If you'd rather only send
+one application's audio to Sonos -- music from a browser tab while
+notification sounds and everything else stay off Sonos, say -- open the
+**Audio source** card on the dashboard, click **Refresh** to list apps
+that have made sound recently, and pick one.
+
+This uses a Windows feature (process-loopback capture) that needs Windows
+10 21H2 or newer, works best on Windows 11, and can't capture every
+app regardless of Windows version -- copy-protected playback and some
+elevated processes aren't capturable this way no matter what. If picking
+an app doesn't produce sound, switch back to "Whole system" for that app.
+Switching sources briefly reconnects Sonos and the local speaker path,
+since the two capture modes run at different audio sample rates.
+
+### Optional: boost a quiet local speaker
+
+Windows' own volume control only affects what PC2Sonos *captures* -- it
+has no effect on what PC2Sonos plays back afterward through your real PC
+speakers/headphones. If that device sounds too quiet even at 100%
+Windows volume (common with a passive speaker on a line-level aux input),
+use the **PC speaker volume boost** slider next to the device picker.
+100% is the original, unchanged passthrough; above that amplifies the
+signal, so very loud peaks can start to clip/distort at high settings --
+the same tradeoff as any volume boost pushed past a source's natural
+level. This only affects the local speaker path; Sonos speakers keep
+their own independent volume control.
 
 ### Optional: start faster after a reboot
 
@@ -147,11 +217,18 @@ is shared with tools like SWYH.
 ## Files
 
 - `main.py` -- entrypoint, wires everything together
-- `audio_engine.py` -- WASAPI capture from the virtual cable, delayed
-  render to your real speakers, fan-out to Sonos streams
-- `sonos_ctl.py` -- Sonos discovery/control via SoCo
+- `audio_engine.py` -- WASAPI capture from the virtual cable (or, in
+  per-app mode, `per_app_audio.py`), delayed + volume-boosted render to
+  your real speakers, fan-out to Sonos streams
+- `per_app_audio.py` -- per-application capture via Windows' process-
+  loopback WASAPI extension, for the "stream just one app" option
+- `sonos_ctl.py` -- Sonos discovery/control via SoCo, including the
+  background watchdog that restarts dropped streams and periodically
+  resyncs long-running ones to prevent drift
 - `calibration.py` -- automatic sync-delay measurement (silent, from
   Sonos's own playback clock, and an optional test-tone + microphone method)
+- `updater.py` / `version.py` -- the once-per-launch update check (see
+  "Why the update checker exists" above)
 - `webapp.py` -- Flask dashboard + the WAV endpoints Sonos speakers pull
   audio from
 - `tray_icon.py` -- system tray icon (Open Dashboard / Quit)

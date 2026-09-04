@@ -416,6 +416,16 @@ def _render_session(stop_event):
     try:
         while not stop_event.is_set():
             target_bytes = int(bytes_per_ms * config["local_delay_ms"])
+            # Windows' own volume mixer only controls what's captured INTO
+            # the virtual cable -- it has no effect on what this render
+            # path plays back afterward, so an aux/line-level speaker that
+            # needs more than that source signal provides has no other
+            # knob to turn. Gain is applied here, after resampling, right
+            # before the device write; audioop.mul saturates rather than
+            # wrapping on overflow, so a high gain clips loud peaks instead
+            # of producing wraparound noise -- audible distortion at the
+            # extreme, not corruption.
+            gain = config.get("local_render_gain", 1.0)
             try:
                 chunk = q.get(timeout=1)
             except queue.Empty:
@@ -441,6 +451,8 @@ def _render_session(stop_event):
                     out, resample_state = audioop.ratecv(
                         out, sample_width, render_channels,
                         capture_rate, render_rate, resample_state)
+                if out and gain != 1.0:
+                    out = audioop.mul(out, sample_width, gain)
                 if out:
                     stream.write(out)
     finally:

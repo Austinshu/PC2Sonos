@@ -129,6 +129,21 @@ DASHBOARD_HTML = """
 <div class="card">
   <label>PC speaker output device &mdash; the real speakers/headphones PC2Sonos should play the delayed audio to (virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list)</label>
   <select id="renderDevice" onchange="setDevice()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
+  <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+    <label>PC speaker volume boost &mdash; Windows' own volume only controls what PC2Sonos captures, not what this device plays back; use this if an aux/line-out speaker is too quiet even at 100% Windows volume</label>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <input type="range" min="0" max="300" step="1" id="localGain" value="{{local_gain_percent}}"
+             oninput="syncLocalGain('slider')" style="flex:1; min-width:150px;">
+      <input type="number" min="0" max="300" step="1" id="localGainNum" value="{{local_gain_percent}}"
+             oninput="syncLocalGain('number')"
+             style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+      <span>%</span>
+      <button onclick="setLocalGain()">Apply</button>
+    </div>
+    <div style="font-size:11px; color:#777; margin-top:6px;">
+      100% = unchanged passthrough (the original behavior). Above 100% amplifies the signal -- loud peaks may clip/distort at high settings, same as any volume boost past a source's natural level.
+    </div>
+  </div>
 </div>
 
 <div class="card">
@@ -332,6 +347,22 @@ async function setDelay(){
   const v = document.getElementById('delay').value;
   await fetch('/api/delay', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({delay_ms: parseInt(v)})});
 }
+function syncLocalGain(source){
+  const slider = document.getElementById('localGain');
+  const num = document.getElementById('localGainNum');
+  if (source === 'slider') {
+    num.value = slider.value;
+  } else {
+    let v = parseInt(num.value);
+    if (isNaN(v)) return;
+    v = Math.max(0, Math.min(300, v));
+    slider.value = v;
+  }
+}
+async function setLocalGain(){
+  const v = document.getElementById('localGain').value;
+  await fetch('/api/local_gain', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({percent: parseInt(v)})});
+}
 let calibPolling = null;
 async function autoCalibrate(method){
   const el = document.getElementById('calibResult');
@@ -477,7 +508,9 @@ setInterval(refresh, 4000);
 
 @app.route("/")
 def dashboard():
-    return render_template_string(DASHBOARD_HTML, delay=config["local_delay_ms"], donate_url=DONATE_URL)
+    return render_template_string(
+        DASHBOARD_HTML, delay=config["local_delay_ms"], donate_url=DONATE_URL,
+        local_gain_percent=round(config.get("local_render_gain", 1.0) * 100))
 
 
 def _should_prompt_donation():
@@ -581,6 +614,18 @@ def api_set_volume(uid):
 def api_set_delay():
     data = request.get_json(force=True)
     config["local_delay_ms"] = max(0, int(data.get("delay_ms", config["local_delay_ms"])))
+    save_config(config)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/local_gain", methods=["POST"])
+def api_set_local_gain():
+    # percent: 0-300, mapped to a 0.0-3.0 multiplier applied in
+    # audio_engine's render loop. Read fresh every chunk there, so this
+    # takes effect immediately -- no render restart needed.
+    data = request.get_json(force=True)
+    percent = max(0, min(300, int(data.get("percent", 100))))
+    config["local_render_gain"] = percent / 100.0
     save_config(config)
     return jsonify({"ok": True})
 

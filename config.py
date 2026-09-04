@@ -101,6 +101,14 @@ DEFAULT_CONFIG = {
     # controls. Starts at 0 on a fresh install -- use the Auto button (or
     # drag the slider up by ear) to find the right value for your setup.
     "local_delay_ms": 0,
+    # Volume for the LOCAL (aux/line-out) speaker path only -- Windows'
+    # own volume mixer controls what's captured going IN, not what this
+    # app does with it afterward, so a quiet aux speaker has no other way
+    # to get louder than the source signal already is. 1.0 = unchanged
+    # passthrough (the old, only-ever behavior); the dashboard slider
+    # shows this as a 0-300% range. Sonos speakers are unaffected -- they
+    # have their own independent volume (config['speakers'][uid]['volume']).
+    "local_render_gain": 1.0,
     "sample_rate": 44100,
     "channels": 2,
     "sample_width": 2,  # bytes (16-bit PCM)
