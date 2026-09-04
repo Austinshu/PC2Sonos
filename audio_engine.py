@@ -366,6 +366,139 @@ def _apply_local_gain(pcm_bytes, gain):
     return arr.astype(np.int16).tobytes()
 
 
+# Bass/mid/treble EQ for the LOCAL speaker path only. Sonos speakers
+# already have their own Bass/Treble controls in the Sonos app and
+# hardware, so this never touches what gets sent to Sonos -- only what
+# audio_engine.py plays out to your real PC speakers/headphones.
+_EQ_BASS_HZ = 200.0
+_EQ_MID_HZ = 1000.0
+_EQ_MID_Q = 0.9
+_EQ_TREBLE_HZ = 5000.0
+_EQ_SHELF_SLOPE = 0.9  # S in the RBJ cookbook shelf formulas -- a gentle, musical slope
+
+
+class _Biquad:
+    """One second-order IIR filter section (direct form I). Stateful --
+    each instance remembers the last two input/output samples, so a
+    single instance must never be shared between channels (that would
+    smear the stereo image) or reused across a totally different filter
+    without resetting."""
+    __slots__ = ("b0", "b1", "b2", "a1", "a2", "x1", "x2", "y1", "y2")
+
+    def __init__(self):
+        self.b0, self.b1, self.b2 = 1.0, 0.0, 0.0
+        self.a1, self.a2 = 0.0, 0.0
+        self.x1 = self.x2 = self.y1 = self.y2 = 0.0
+
+    def set_coeffs(self, b0, b1, b2, a0, a1, a2):
+        self.b0, self.b1, self.b2 = b0 / a0, b1 / a0, b2 / a0
+        self.a1, self.a2 = a1 / a0, a2 / a0
+
+    def process(self, x):
+        y = (self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
+             - self.a1 * self.y1 - self.a2 * self.y2)
+        self.x2, self.x1 = self.x1, x
+        self.y2, self.y1 = self.y1, y
+        return y
+
+
+def _low_shelf_coeffs(freq, rate, gain_db):
+    """RBJ Audio EQ Cookbook low-shelf -- boosts/cuts everything below
+    `freq`. This is the standard, decades-old textbook biquad formula
+    used throughout DSP (not derived from or copied out of any specific
+    project's source)."""
+    a = 10 ** (gain_db / 40.0)
+    w0 = 2 * np.pi * freq / rate
+    cos_w0, sin_w0 = np.cos(w0), np.sin(w0)
+    alpha = sin_w0 / 2.0 * np.sqrt((a + 1 / a) * (1.0 / _EQ_SHELF_SLOPE - 1) + 2)
+    sqrt_a = np.sqrt(a)
+    b0 = a * ((a + 1) - (a - 1) * cos_w0 + 2 * sqrt_a * alpha)
+    b1 = 2 * a * ((a - 1) - (a + 1) * cos_w0)
+    b2 = a * ((a + 1) - (a - 1) * cos_w0 - 2 * sqrt_a * alpha)
+    a0 = (a + 1) + (a - 1) * cos_w0 + 2 * sqrt_a * alpha
+    a1 = -2 * ((a - 1) + (a + 1) * cos_w0)
+    a2 = (a + 1) + (a - 1) * cos_w0 - 2 * sqrt_a * alpha
+    return b0, b1, b2, a0, a1, a2
+
+
+def _high_shelf_coeffs(freq, rate, gain_db):
+    """RBJ Audio EQ Cookbook high-shelf -- boosts/cuts everything above `freq`."""
+    a = 10 ** (gain_db / 40.0)
+    w0 = 2 * np.pi * freq / rate
+    cos_w0, sin_w0 = np.cos(w0), np.sin(w0)
+    alpha = sin_w0 / 2.0 * np.sqrt((a + 1 / a) * (1.0 / _EQ_SHELF_SLOPE - 1) + 2)
+    sqrt_a = np.sqrt(a)
+    b0 = a * ((a + 1) + (a - 1) * cos_w0 + 2 * sqrt_a * alpha)
+    b1 = -2 * a * ((a - 1) + (a + 1) * cos_w0)
+    b2 = a * ((a + 1) + (a - 1) * cos_w0 - 2 * sqrt_a * alpha)
+    a0 = (a + 1) - (a - 1) * cos_w0 + 2 * sqrt_a * alpha
+    a1 = 2 * ((a - 1) - (a + 1) * cos_w0)
+    a2 = (a + 1) - (a - 1) * cos_w0 - 2 * sqrt_a * alpha
+    return b0, b1, b2, a0, a1, a2
+
+
+def _peaking_coeffs(freq, rate, gain_db, q):
+    """RBJ Audio EQ Cookbook peaking (bell) filter -- boosts/cuts a band
+    centered on `freq`, width controlled by `q`."""
+    a = 10 ** (gain_db / 40.0)
+    w0 = 2 * np.pi * freq / rate
+    cos_w0, sin_w0 = np.cos(w0), np.sin(w0)
+    alpha = sin_w0 / (2 * q)
+    b0 = 1 + alpha * a
+    b1 = -2 * cos_w0
+    b2 = 1 - alpha * a
+    a0 = 1 + alpha / a
+    a1 = -2 * cos_w0
+    a2 = 1 - alpha / a
+    return b0, b1, b2, a0, a1, a2
+
+
+class _ThreeBandEQ:
+    """Bass/mid/treble EQ, one independent filter chain per channel so
+    stereo channels never share (and smear) filter state. Coefficients
+    are only recomputed when the dashboard's settings actually change --
+    not on every chunk -- since that's the only thing that needs to be
+    recalculated; the running filter state (each Biquad's memory of its
+    last two samples) has to persist across chunks for the filter to
+    sound like a continuous EQ rather than clicking every buffer
+    boundary."""
+
+    def __init__(self, rate, channels):
+        self.rate = rate
+        self.channels = channels
+        self._last = (0.0, 0.0, 0.0)
+        self._bands = [[_Biquad(), _Biquad(), _Biquad()] for _ in range(channels)]
+
+    def _update(self, bass_db, mid_db, treble_db):
+        bass_c = _low_shelf_coeffs(_EQ_BASS_HZ, self.rate, bass_db)
+        mid_c = _peaking_coeffs(_EQ_MID_HZ, self.rate, mid_db, _EQ_MID_Q)
+        treble_c = _high_shelf_coeffs(_EQ_TREBLE_HZ, self.rate, treble_db)
+        for chain in self._bands:
+            chain[0].set_coeffs(*bass_c)
+            chain[1].set_coeffs(*mid_c)
+            chain[2].set_coeffs(*treble_c)
+        self._last = (bass_db, mid_db, treble_db)
+
+    def process(self, pcm_bytes, bass_db, mid_db, treble_db):
+        if bass_db == 0.0 and mid_db == 0.0 and treble_db == 0.0:
+            return pcm_bytes  # flat -- skip the work, and never drift state while "off"
+        if (bass_db, mid_db, treble_db) != self._last:
+            self._update(bass_db, mid_db, treble_db)
+        arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float64)
+        frames = len(arr) // self.channels
+        arr = arr.reshape(frames, self.channels)
+        out = np.empty_like(arr)
+        for ch in range(self.channels):
+            bass_f, mid_f, treble_f = self._bands[ch]
+            col = arr[:, ch]
+            outcol = out[:, ch]
+            for i in range(frames):
+                x = bass_f.process(col[i])
+                x = mid_f.process(x)
+                outcol[i] = treble_f.process(x)
+        return np.clip(out, -32768, 32767).astype(np.int16).tobytes()
+
+
 def render_loop(stop_event):
     """Plays the SAME audio back out to your real speakers, held behind
     by config['local_delay_ms'] milliseconds, so it lines up with the
@@ -435,6 +568,7 @@ def _render_session(stop_event):
     needs_resample = (render_rate != capture_rate)
     needs_downmix = (render_channels == 1 and capture_channels == 2)
     resample_state = None
+    eq = _ThreeBandEQ(render_rate, render_channels)
 
     sid, q = broadcaster.subscribe(maxlen=4000)
     # buffering/delay timing is tracked in terms of the CAPTURE stream's
@@ -453,6 +587,9 @@ def _render_session(stop_event):
             # knob to turn. Gain is applied (see _apply_local_gain) here,
             # after resampling, right before the device write.
             gain = config.get("local_render_gain", 1.0)
+            bass_db = config.get("local_eq_bass_db", 0.0)
+            mid_db = config.get("local_eq_mid_db", 0.0)
+            treble_db = config.get("local_eq_treble_db", 0.0)
             try:
                 chunk = q.get(timeout=1)
             except queue.Empty:
@@ -478,6 +615,8 @@ def _render_session(stop_event):
                     out, resample_state = audioop.ratecv(
                         out, sample_width, render_channels,
                         capture_rate, render_rate, resample_state)
+                if out:
+                    out = eq.process(out, bass_db, mid_db, treble_db)
                 if out and gain != 1.0:
                     out = _apply_local_gain(out, gain)
                 if out:

@@ -208,6 +208,49 @@ assert (_np.abs(_loud_boosted) >= 32767).sum() == 0, \
     "the soft limiter should never pin samples exactly at full scale the way a hard clip does"
 print("  local_render_gain sample scaling OK (quiet audio scales linearly, loud audio soft-limits)")
 
+r = client.post("/api/local_eq", json={"bass": 6, "mid": -3, "treble": 999})  # treble clamps
+assert r.status_code == 200
+assert webapp.config["local_eq_bass_db"] == 6.0
+assert webapp.config["local_eq_mid_db"] == -3.0
+assert webapp.config["local_eq_treble_db"] == 12.0, "EQ bands must clamp to +/-12dB"
+r = client.post("/api/local_eq", json={"bass": 0, "mid": 0, "treble": 0})  # restore flat for later tests
+assert webapp.config["local_eq_bass_db"] == 0.0
+print("  /api/local_eq OK (clamped to +/-12dB)")
+
+print("[test] _ThreeBandEQ: flat is a byte-exact passthrough, each band only affects its own range...")
+_RATE = 44100
+_t = _np.linspace(0, 0.3, int(_RATE * 0.3), False)
+
+
+def _tone(freq):
+    sig = (0.3 * _np.sin(2 * _np.pi * freq * _t) * 32767).astype(_np.int16)
+    return _np.repeat(sig[:, None], 2, axis=1).flatten().tobytes()
+
+
+def _rms(pcm):
+    return _np.sqrt(_np.mean(_np.frombuffer(pcm, dtype=_np.int16).astype(_np.float64) ** 2))
+
+
+_bass_tone, _treble_tone = _tone(100), _tone(8000)
+
+_flat_eq = audio_engine._ThreeBandEQ(_RATE, 2)
+assert _flat_eq.process(_bass_tone, 0.0, 0.0, 0.0) == _bass_tone, \
+    "a flat (0,0,0) EQ must be a byte-exact passthrough, not just numerically close"
+
+_bass_boost = audio_engine._ThreeBandEQ(_RATE, 2)
+bass_before, bass_after = _rms(_bass_tone), _rms(_bass_boost.process(_bass_tone, 12.0, 0.0, 0.0))
+assert bass_after > bass_before * 3, "boosting bass +12dB should strongly affect a 100Hz tone"
+
+_bass_boost_hf = audio_engine._ThreeBandEQ(_RATE, 2)
+treble_before, treble_after_bassboost = _rms(_treble_tone), _rms(_bass_boost_hf.process(_treble_tone, 12.0, 0.0, 0.0))
+assert 0.8 < treble_after_bassboost / treble_before < 1.2, \
+    "boosting bass should NOT meaningfully affect an 8000Hz tone (frequency selectivity)"
+
+_treble_boost = audio_engine._ThreeBandEQ(_RATE, 2)
+treble_after = _rms(_treble_boost.process(_treble_tone, 0.0, 0.0, 12.0))
+assert treble_after > treble_before * 1.5, "boosting treble +12dB should strongly affect an 8000Hz tone"
+print("  OK (bass/treble shelves are frequency-selective, flat setting is a true no-op)")
+
 r = client.get("/api/audio_sessions")
 body = r.get_json()
 assert r.status_code == 200 and "sessions" in body and body["mode"] == "system"

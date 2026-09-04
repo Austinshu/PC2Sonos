@@ -141,7 +141,34 @@ DASHBOARD_HTML = """
       <button onclick="setLocalGain()">Apply</button>
     </div>
     <div style="font-size:11px; color:#777; margin-top:6px;">
-      100% = unchanged passthrough (the original behavior). Above 100% amplifies the signal -- loud peaks may clip/distort at high settings, same as any volume boost past a source's natural level.
+      100% = unchanged passthrough (the original behavior). Above 100% amplifies the signal with a soft limiter -- loud peaks compress gradually instead of clipping, so it stays clean well past 100%.
+    </div>
+  </div>
+  <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+    <label>PC speaker EQ &mdash; bass/mid/treble for the local speaker path only (Sonos speakers keep their own EQ in the Sonos app)</label>
+    <div id="eqSliders" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;">
+      <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+        <input type="range" min="-12" max="12" step="1" id="eqBass" value="{{eq_bass_db}}"
+               oninput="setLocalEq()" orient="vertical"
+               style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
+        <span id="eqBassVal" style="font-size:11px; color:#aaa;">{{eq_bass_db}} dB</span>
+        <span style="font-size:11px; color:#777;">Bass</span>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+        <input type="range" min="-12" max="12" step="1" id="eqMid" value="{{eq_mid_db}}"
+               oninput="setLocalEq()" orient="vertical"
+               style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
+        <span id="eqMidVal" style="font-size:11px; color:#aaa;">{{eq_mid_db}} dB</span>
+        <span style="font-size:11px; color:#777;">Mid</span>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+        <input type="range" min="-12" max="12" step="1" id="eqTreble" value="{{eq_treble_db}}"
+               oninput="setLocalEq()" orient="vertical"
+               style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
+        <span id="eqTrebleVal" style="font-size:11px; color:#aaa;">{{eq_treble_db}} dB</span>
+        <span style="font-size:11px; color:#777;">Treble</span>
+      </div>
+      <button onclick="resetLocalEq()" style="background:#333; color:#eee; font-weight:400; align-self:flex-start; padding:4px 10px; font-size:12px;">Reset</button>
     </div>
   </div>
 </div>
@@ -363,6 +390,28 @@ async function setLocalGain(){
   const v = document.getElementById('localGain').value;
   await fetch('/api/local_gain', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({percent: parseInt(v)})});
 }
+let eqDebounce = null;
+function setLocalEq(){
+  const bass = parseInt(document.getElementById('eqBass').value);
+  const mid = parseInt(document.getElementById('eqMid').value);
+  const treble = parseInt(document.getElementById('eqTreble').value);
+  document.getElementById('eqBassVal').textContent = bass + ' dB';
+  document.getElementById('eqMidVal').textContent = mid + ' dB';
+  document.getElementById('eqTrebleVal').textContent = treble + ' dB';
+  // debounce -- dragging a slider fires oninput continuously, no need
+  // to POST every single intermediate value
+  if (eqDebounce) clearTimeout(eqDebounce);
+  eqDebounce = setTimeout(() => {
+    fetch('/api/local_eq', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({bass, mid, treble})});
+  }, 200);
+}
+function resetLocalEq(){
+  document.getElementById('eqBass').value = 0;
+  document.getElementById('eqMid').value = 0;
+  document.getElementById('eqTreble').value = 0;
+  setLocalEq();
+}
 let calibPolling = null;
 async function autoCalibrate(method){
   const el = document.getElementById('calibResult');
@@ -510,7 +559,10 @@ setInterval(refresh, 4000);
 def dashboard():
     return render_template_string(
         DASHBOARD_HTML, delay=config["local_delay_ms"], donate_url=DONATE_URL,
-        local_gain_percent=round(config.get("local_render_gain", 1.0) * 100))
+        local_gain_percent=round(config.get("local_render_gain", 1.0) * 100),
+        eq_bass_db=round(config.get("local_eq_bass_db", 0.0)),
+        eq_mid_db=round(config.get("local_eq_mid_db", 0.0)),
+        eq_treble_db=round(config.get("local_eq_treble_db", 0.0)))
 
 
 def _should_prompt_donation():
@@ -626,6 +678,22 @@ def api_set_local_gain():
     data = request.get_json(force=True)
     percent = max(0, min(300, int(data.get("percent", 100))))
     config["local_render_gain"] = percent / 100.0
+    save_config(config)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/local_eq", methods=["POST"])
+def api_set_local_eq():
+    # Each band is dB, clamped to +/-12 -- read fresh every chunk in
+    # audio_engine's _ThreeBandEQ, so this takes effect immediately with
+    # no render restart. Local speaker path only; never touches the
+    # Sonos-facing stream.
+    data = request.get_json(force=True)
+    for key, config_key in (("bass", "local_eq_bass_db"),
+                             ("mid", "local_eq_mid_db"),
+                             ("treble", "local_eq_treble_db")):
+        if key in data:
+            config[config_key] = max(-12.0, min(12.0, float(data[key])))
     save_config(config)
     return jsonify({"ok": True})
 

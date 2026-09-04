@@ -109,6 +109,14 @@ DEFAULT_CONFIG = {
     # shows this as a 0-300% range. Sonos speakers are unaffected -- they
     # have their own independent volume (config['speakers'][uid]['volume']).
     "local_render_gain": 1.0,
+    # Bass/mid/treble EQ, LOCAL speaker path only (0.0 dB = flat/off,
+    # each -12..+12 in the dashboard). Sonos speakers already have their
+    # own Bass/Treble controls in the Sonos app/hardware -- this never
+    # touches what gets sent to Sonos, only what audio_engine.py plays
+    # out to your real PC speakers/headphones.
+    "local_eq_bass_db": 0.0,
+    "local_eq_mid_db": 0.0,
+    "local_eq_treble_db": 0.0,
     "sample_rate": 44100,
     "channels": 2,
     "sample_width": 2,  # bytes (16-bit PCM)
