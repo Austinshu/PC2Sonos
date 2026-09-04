@@ -127,77 +127,33 @@ DASHBOARD_HTML = """
 </div>
 
 <div class="card">
-  <label>PC speaker output device &mdash; the real speakers/headphones PC2Sonos should play the delayed audio to (virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list)</label>
-  <select id="renderDevice" onchange="setDevice()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
-  <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a; font-size:11px; color:#999; line-height:1.5;">
-    The volume boost and EQ below can push your speakers harder than their
-    intended level, and pushing either far enough can stress or damage
-    underpowered speakers/amps over time. <strong>The defaults (100%
-    boost, 0dB EQ) are what we recommend</strong> -- adjusting past them
-    is at your own risk to your hardware, not just audio quality.
-  </div>
-  <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
-    <label>PC speaker volume boost &mdash; Windows' own volume only controls what PC2Sonos captures, not what this device plays back; use this if an aux/line-out speaker is too quiet even at 100% Windows volume</label>
-    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-      <input type="range" min="0" max="500" step="1" id="localGain" value="{{local_gain_percent}}"
-             oninput="syncLocalGain('slider')" style="flex:1; min-width:150px;">
-      <input type="number" min="0" max="500" step="1" id="localGainNum" value="{{local_gain_percent}}"
-             oninput="syncLocalGain('number')"
-             style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
-      <span>%</span>
-      <button onclick="setLocalGain()">Apply</button>
-    </div>
-    <div style="font-size:11px; color:#777; margin-top:6px;">
-      100% = unchanged passthrough (the original behavior). Above 100% amplifies the signal with a soft limiter -- loud peaks compress gradually instead of clipping, so it stays clean well past 100%.
-    </div>
-    <div id="localGainWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:4px;">
-      &#9888; Above 100% is past the source's natural level -- the higher you go, the more the limiter has to compress to stay clean.
-    </div>
-  </div>
-  <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
-    <label>PC speaker EQ &mdash; bass/mid/treble for the local speaker path only (Sonos speakers keep their own EQ in the Sonos app)</label>
-    <div id="eqSliders" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;">
-      <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
-        <input type="range" min="-24" max="24" step="1" id="eqBass" value="{{eq_bass_db}}"
-               oninput="setLocalEq()" orient="vertical"
-               style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
-        <span id="eqBassVal" style="font-size:11px; color:#aaa;">{{eq_bass_db}} dB</span>
-        <span style="font-size:11px; color:#777;">Bass</span>
-      </div>
-      <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
-        <input type="range" min="-24" max="24" step="1" id="eqMid" value="{{eq_mid_db}}"
-               oninput="setLocalEq()" orient="vertical"
-               style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
-        <span id="eqMidVal" style="font-size:11px; color:#aaa;">{{eq_mid_db}} dB</span>
-        <span style="font-size:11px; color:#777;">Mid</span>
-      </div>
-      <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
-        <input type="range" min="-24" max="24" step="1" id="eqTreble" value="{{eq_treble_db}}"
-               oninput="setLocalEq()" orient="vertical"
-               style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
-        <span id="eqTrebleVal" style="font-size:11px; color:#aaa;">{{eq_treble_db}} dB</span>
-        <span style="font-size:11px; color:#777;">Treble</span>
-      </div>
-      <button onclick="resetLocalEq()" style="background:#333; color:#eee; font-weight:400; align-self:flex-start; padding:4px 10px; font-size:12px;">Reset</button>
-    </div>
-    <div id="eqWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:6px;">
-      &#9888; Past &plusmn;6dB starts sounding less like "more/less bass" and more like a different speaker -- large boosts can also introduce noise.
-    </div>
-  </div>
-</div>
-
-<div class="card">
   <div style="display:flex; align-items:center; justify-content:space-between;">
-    <label style="margin-bottom:0;">Audio source &mdash; what PC2Sonos sends to Sonos</label>
-    <button onclick="loadAudioSessions()" style="background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;">Refresh</button>
+    <label style="margin-bottom:0;">Sonos speakers</label>
+    <button onclick="rescan()" style="background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;">Rescan</button>
   </div>
   <div style="font-size:11px; color:#777; margin:2px 0 8px;">
-    An app only shows up here once it's made some sound since PC2Sonos started (or since the last Refresh). Windows can't always capture a specific app this way &mdash; copy-protected playback and some elevated apps aren't capturable regardless.
+    &#9733; = default speaker: streamed to the instant PC2Sonos starts, before
+    a network scan finishes. Click a star to set it.
   </div>
-  <select id="captureSource" onchange="setCaptureSource()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
-    <option value="">Whole system (default)</option>
-  </select>
-  <div id="captureSourceResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
+  <div id="speakers"></div>
+  <div id="rescanResult" style="margin-top:6px; font-size:12px; color:#888;"></div>
+  <details style="margin-top:12px; font-size:12px; color:#aaa;">
+    <summary style="cursor:pointer; color:#ccc;">Speakers not showing up? (different subnet / IoT VLAN)</summary>
+    <div style="margin-top:10px; line-height:1.5;">
+      Automatic discovery uses network multicast, which most routers don't
+      pass between VLANs. If your Sonos speakers are on a separate (e.g.
+      IoT) network, type <strong>one speaker's IP address</strong> below &mdash;
+      the app will reach it directly and find the rest from it. Give that
+      speaker a DHCP reservation so its IP doesn't change. Comma-separate
+      to list more than one.
+      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <input type="text" id="seedIps" placeholder="10.0.20.41, 10.0.20.42"
+               style="flex:1; min-width:180px; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+        <button onclick="saveSeedIps()">Save &amp; scan</button>
+      </div>
+      <div id="seedResult" style="margin-top:8px; color:#888;"></div>
+    </div>
+  </details>
 </div>
 
 <div class="card">
@@ -229,35 +185,85 @@ DASHBOARD_HTML = """
   </div>
 </div>
 
-<div class="card">
-  <div style="display:flex; align-items:center; justify-content:space-between;">
-    <label style="margin-bottom:0;">Sonos speakers</label>
-    <button onclick="rescan()" style="background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;">Rescan</button>
-  </div>
-  <div style="font-size:11px; color:#777; margin:2px 0 8px;">
-    &#9733; = default speaker: streamed to the instant PC2Sonos starts, before
-    a network scan finishes. Click a star to set it.
-  </div>
-  <div id="speakers"></div>
-  <div id="rescanResult" style="margin-top:6px; font-size:12px; color:#888;"></div>
-  <details style="margin-top:12px; font-size:12px; color:#aaa;">
-    <summary style="cursor:pointer; color:#ccc;">Speakers not showing up? (different subnet / IoT VLAN)</summary>
-    <div style="margin-top:10px; line-height:1.5;">
-      Automatic discovery uses network multicast, which most routers don't
-      pass between VLANs. If your Sonos speakers are on a separate (e.g.
-      IoT) network, type <strong>one speaker's IP address</strong> below &mdash;
-      the app will reach it directly and find the rest from it. Give that
-      speaker a DHCP reservation so its IP doesn't change. Comma-separate
-      to list more than one.
-      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-        <input type="text" id="seedIps" placeholder="10.0.20.41, 10.0.20.42"
-               style="flex:1; min-width:180px; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
-        <button onclick="saveSeedIps()">Save &amp; scan</button>
-      </div>
-      <div id="seedResult" style="margin-top:8px; color:#888;"></div>
+<details class="card" style="padding:0;">
+  <summary style="cursor:pointer; padding:16px 18px; font-size:13px; color:#ccc; font-weight:600;">
+    Advanced: PC speaker output &amp; audio tuning
+  </summary>
+  <div style="padding:0 18px 16px;">
+    <div style="padding-top:4px;">
+      <label>PC speaker output device &mdash; the real speakers/headphones PC2Sonos should play the delayed audio to (virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list)</label>
+      <select id="renderDevice" onchange="setDevice()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
     </div>
-  </details>
-</div>
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a; font-size:11px; color:#999; line-height:1.5;">
+      The volume boost and EQ below can push your speakers harder than their
+      intended level, and pushing either far enough can stress or damage
+      underpowered speakers/amps over time. <strong>The defaults (100%
+      boost, 0dB EQ) are what we recommend</strong> -- adjusting past them
+      is at your own risk to your hardware, not just audio quality.
+    </div>
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+      <label>PC speaker volume boost &mdash; Windows' own volume only controls what PC2Sonos captures, not what this device plays back; use this if an aux/line-out speaker is too quiet even at 100% Windows volume</label>
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <input type="range" min="0" max="500" step="1" id="localGain" value="{{local_gain_percent}}"
+               oninput="syncLocalGain('slider')" style="flex:1; min-width:150px;">
+        <input type="number" min="0" max="500" step="1" id="localGainNum" value="{{local_gain_percent}}"
+               oninput="syncLocalGain('number')"
+               style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+        <span>%</span>
+        <button onclick="setLocalGain()">Apply</button>
+      </div>
+      <div style="font-size:11px; color:#777; margin-top:6px;">
+        100% = unchanged passthrough (the original behavior). Above 100% amplifies the signal with a soft limiter -- loud peaks compress gradually instead of clipping, so it stays clean well past 100%.
+      </div>
+      <div id="localGainWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:4px;">
+        &#9888; Above 100% is past the source's natural level -- the higher you go, the more the limiter has to compress to stay clean.
+      </div>
+    </div>
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+      <label>PC speaker EQ &mdash; bass/mid/treble for the local speaker path only (Sonos speakers keep their own EQ in the Sonos app)</label>
+      <div id="eqSliders" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;">
+        <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+          <input type="range" min="-24" max="24" step="1" id="eqBass" value="{{eq_bass_db}}"
+                 oninput="setLocalEq()" orient="vertical"
+                 style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
+          <span id="eqBassVal" style="font-size:11px; color:#aaa;">{{eq_bass_db}} dB</span>
+          <span style="font-size:11px; color:#777;">Bass</span>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+          <input type="range" min="-24" max="24" step="1" id="eqMid" value="{{eq_mid_db}}"
+                 oninput="setLocalEq()" orient="vertical"
+                 style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
+          <span id="eqMidVal" style="font-size:11px; color:#aaa;">{{eq_mid_db}} dB</span>
+          <span style="font-size:11px; color:#777;">Mid</span>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+          <input type="range" min="-24" max="24" step="1" id="eqTreble" value="{{eq_treble_db}}"
+                 oninput="setLocalEq()" orient="vertical"
+                 style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
+          <span id="eqTrebleVal" style="font-size:11px; color:#aaa;">{{eq_treble_db}} dB</span>
+          <span style="font-size:11px; color:#777;">Treble</span>
+        </div>
+        <button onclick="resetLocalEq()" style="background:#333; color:#eee; font-weight:400; align-self:flex-start; padding:4px 10px; font-size:12px;">Reset</button>
+      </div>
+      <div id="eqWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:6px;">
+        &#9888; Past &plusmn;6dB starts sounding less like "more/less bass" and more like a different speaker -- large boosts can also introduce noise.
+      </div>
+    </div>
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+      <div style="display:flex; align-items:center; justify-content:space-between;">
+        <label style="margin-bottom:0;">Audio source &mdash; what PC2Sonos sends to Sonos</label>
+        <button onclick="loadAudioSessions()" style="background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;">Refresh</button>
+      </div>
+      <div style="font-size:11px; color:#777; margin:2px 0 8px;">
+        An app only shows up here once it's made some sound since PC2Sonos started (or since the last Refresh). Windows can't always capture a specific app this way &mdash; copy-protected playback and some elevated apps aren't capturable regardless.
+      </div>
+      <select id="captureSource" onchange="setCaptureSource()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+        <option value="">Whole system (default)</option>
+      </select>
+      <div id="captureSourceResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
+    </div>
+  </div>
+</details>
 
 <div class="card">
   <label style="margin-bottom:0;">Troubleshooting</label>
