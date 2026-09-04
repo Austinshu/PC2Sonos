@@ -8,7 +8,7 @@ import time
 
 from flask import Flask, Response, jsonify, render_template_string, request
 
-from audio_engine import CHUNK, broadcaster, list_output_devices, restart_render, get_current_render_device_name, get_lan_ip
+from audio_engine import CHUNK, broadcaster, list_output_devices, restart_render, restart_capture, get_current_render_device_name, get_lan_ip
 from config import config, save_config, PASSWORD_PATH
 from sonos_ctl import speaker_mgr
 
@@ -121,9 +121,28 @@ DASHBOARD_HTML = """
   <a href="{{donate_url}}" target="_blank" style="color:#1db954;">&hearts; Support this project</a>
 </div>
 
+<div class="card" id="updateBanner" style="display:none; background:#132a1c; border:1px solid #1f4d2e; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+  <span id="updateText" style="color:#ddd; font-size:13px;"></span>
+  <button onclick="downloadUpdate()">Download</button>
+</div>
+
 <div class="card">
-  <label>PC speaker output device &mdash; the real speakers/headphones PC2Sonos should play the delayed audio to (virtual devices like game-streaming mics are flagged and best avoided)</label>
+  <label>PC speaker output device &mdash; the real speakers/headphones PC2Sonos should play the delayed audio to (virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list)</label>
   <select id="renderDevice" onchange="setDevice()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
+</div>
+
+<div class="card">
+  <div style="display:flex; align-items:center; justify-content:space-between;">
+    <label style="margin-bottom:0;">Audio source &mdash; what PC2Sonos sends to Sonos</label>
+    <button onclick="loadAudioSessions()" style="background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;">Refresh</button>
+  </div>
+  <div style="font-size:11px; color:#777; margin:2px 0 8px;">
+    An app only shows up here once it's made some sound since PC2Sonos started (or since the last Refresh). Windows can't always capture a specific app this way &mdash; copy-protected playback and some elevated apps aren't capturable regardless.
+  </div>
+  <select id="captureSource" onchange="setCaptureSource()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+    <option value="">Whole system (default)</option>
+  </select>
+  <div id="captureSourceResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
 </div>
 
 <div class="card">
@@ -343,7 +362,7 @@ async function loadDevices(){
   data.devices.forEach(d => {
     const opt = document.createElement('option');
     opt.value = d.name;
-    opt.textContent = d.name + (d.likely_virtual ? '  (looks virtual -- probably not real speakers)' : '');
+    opt.textContent = d.name;
     if (d.name === data.current) opt.selected = true;
     sel.appendChild(opt);
   });
@@ -351,6 +370,35 @@ async function loadDevices(){
 async function setDevice(){
   const sel = document.getElementById('renderDevice');
   await fetch('/api/render_device', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({device: sel.value})});
+}
+async function loadAudioSessions(){
+  const res = await fetch('/api/audio_sessions');
+  const data = await res.json();
+  const sel = document.getElementById('captureSource');
+  sel.innerHTML = '';
+  const wholeSystem = document.createElement('option');
+  wholeSystem.value = '';
+  wholeSystem.textContent = 'Whole system (default)';
+  sel.appendChild(wholeSystem);
+  data.sessions.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.name;
+    opt.textContent = s.name;
+    sel.appendChild(opt);
+  });
+  sel.value = (data.mode === 'process') ? data.target : '';
+}
+async function setCaptureSource(){
+  const sel = document.getElementById('captureSource');
+  const el = document.getElementById('captureSourceResult');
+  const target = sel.value;
+  el.textContent = 'Switching...';
+  const res = await fetch('/api/capture_source', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mode: target ? 'process' : 'system', target})});
+  const data = await res.json();
+  el.textContent = data.ok
+    ? (target ? ('Now capturing only ' + target + '.') : 'Now capturing the whole system again.')
+    : ('Failed: ' + data.error);
 }
 function exportDiag(){
   document.getElementById('diagModal').classList.add('show');
@@ -387,10 +435,39 @@ async function checkDonatePrompt(){
     document.getElementById('donateModal').classList.add('show');
   }
 }
+let _updateDownloadUrl = null;
+let _updatePoll = null;
+async function checkUpdate(){
+  // Polls OUR OWN local /api/update_status, not GitHub -- the one real
+  // GitHub request already happened once at startup (see updater.py).
+  // This just waits for that background result to land, then stops.
+  try {
+    const res = await fetch('/api/update_status');
+    const s = await res.json();
+    if (s.checked) {
+      if (_updatePoll) clearInterval(_updatePoll);
+      if (s.update_available) {
+        _updateDownloadUrl = s.download_url;
+        document.getElementById('updateText').textContent =
+          'PC2Sonos ' + s.latest_version + ' is available — you have ' + s.current_version + '.';
+        document.getElementById('updateBanner').style.display = 'flex';
+      }
+    }
+  } catch (e) {
+    // a transient fetch hiccup shouldn't permanently give up -- just try
+    // again on the next tick instead of clearing the interval here
+  }
+}
+function downloadUpdate(){
+  if (_updateDownloadUrl) window.open(_updateDownloadUrl, '_blank');
+}
 refresh();
 loadDevices();
+loadAudioSessions();
 loadSeedIps();
 checkDonatePrompt();
+checkUpdate();
+_updatePoll = setInterval(checkUpdate, 3000);
 setInterval(refresh, 4000);
 </script>
 </body>
@@ -510,10 +587,24 @@ def api_set_delay():
 
 @app.route("/api/devices")
 def api_devices():
+    # Virtual/software outputs (VB-Cable included) are never a real
+    # speaker a person would pick here -- PC2Sonos uses the cable
+    # internally regardless of what shows in this list. Diagnostics
+    # (diagnostics.py) still reports the full list with a "looks virtual"
+    # flag, for troubleshooting; this is just the dashboard's picker.
+    devices = [d for d in list_output_devices() if not d.get("likely_virtual")]
     return jsonify({
-        "devices": list_output_devices(),
+        "devices": devices,
         "current": get_current_render_device_name(),
     })
+
+
+@app.route("/api/update_status")
+def api_update_status():
+    # Local-only -- reads updater.py's in-memory cache from the single
+    # check that ran once at startup. Never triggers a new GitHub request.
+    from updater import get_status
+    return jsonify(get_status())
 
 
 @app.route("/api/render_device", methods=["POST"])
@@ -521,6 +612,39 @@ def api_set_render_device():
     data = request.get_json(force=True)
     device_name = data.get("device", "")
     restart_render(new_device_substr=device_name)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/audio_sessions")
+def api_audio_sessions():
+    # Apps with an audio session open right now -- the "capture just this
+    # app" picker. Not available at all on non-Windows/older Windows (see
+    # per_app_audio.py's Windows-version notes), so this degrades to an
+    # empty list rather than a 500 in that case; the dashboard just shows
+    # "whole system" as the only option.
+    try:
+        from per_app_audio import list_audio_sessions
+        sessions = list_audio_sessions()
+    except Exception as e:
+        print(f"[audio] can't list per-app audio sessions: {e}")
+        sessions = []
+    return jsonify({
+        "sessions": sessions,
+        "mode": config.get("capture_mode", "system"),
+        "target": config.get("capture_target_name", ""),
+    })
+
+
+@app.route("/api/capture_source", methods=["POST"])
+def api_set_capture_source():
+    data = request.get_json(force=True)
+    mode = data.get("mode")
+    if mode not in ("system", "process"):
+        return jsonify({"ok": False, "error": "mode must be 'system' or 'process'"}), 400
+    target = str(data.get("target", "")).strip()
+    if mode == "process" and not target:
+        return jsonify({"ok": False, "error": "pick an application first"}), 400
+    restart_capture(new_mode=mode, new_target_name=target)
     return jsonify({"ok": True})
 
 
@@ -592,16 +716,30 @@ def stream_wav(uid):
         chunk_ms = CHUNK / config["sample_rate"] * 1000
         max_backlog_chunks = max(1, int(200 / chunk_ms))
         trim_to_chunks = max(1, int(50 / chunk_ms))
+        last_trim_log = 0.0
         try:
             while True:
                 chunk = q.get()
                 backlog = q.qsize()
                 if backlog > max_backlog_chunks:
+                    dropped = 0
                     for _ in range(backlog - trim_to_chunks):
                         try:
                             chunk = q.get_nowait()
+                            dropped += 1
                         except queue.Empty:
                             break
+                    # this IS an audible skip/glitch on the Sonos side --
+                    # was previously silent, so a real stutter left no
+                    # trace anywhere to diagnose it from. Throttled to
+                    # once per 5s so a bad stretch doesn't flood the log.
+                    now = time.monotonic()
+                    if dropped and now - last_trim_log > 5:
+                        last_trim_log = now
+                        print(f"[stream] backlog hit {backlog} chunks "
+                              f"(~{backlog * chunk_ms:.0f}ms) for {uid}; "
+                              f"dropped {dropped} chunks (~{dropped * chunk_ms:.0f}ms) "
+                              f"-- this is an audible skip on the Sonos side")
                 yield chunk
         finally:
             broadcaster.unsubscribe(sid)

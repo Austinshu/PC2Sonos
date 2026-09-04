@@ -158,12 +158,15 @@ print("  /api/delay OK")
 
 r = client.get("/api/devices")
 body = r.get_json()
-# CABLE Output is an input-only (recording) device in the fake, so only
-# the 2 real OUTPUT-capable devices should be listed here.
-assert r.status_code == 200 and len(body["devices"]) == 2, body
+# CABLE Output is an input-only (recording) device in the fake, and the
+# Steam virtual mic is filtered out as a virtual/software output -- only
+# the one real speaker should be offered as a pickable option here.
+assert r.status_code == 200 and len(body["devices"]) == 1, body
 names = {d["name"] for d in body["devices"]}
-assert "Speakers (Steam Streaming Microphone)" in names
-print("  /api/devices OK")
+assert "Speakers (Steam Streaming Microphone)" not in names, \
+    "virtual outputs must not be selectable in the dashboard"
+assert "Speakers (Realtek(R) Audio)" in names
+print("  /api/devices OK (virtual outputs hidden from the picker)")
 
 r = client.post("/api/render_device", json={"device": "Speakers (Realtek(R) Audio)"})
 assert r.status_code == 200
@@ -173,6 +176,74 @@ assert audio_engine.get_current_render_device_name() == "Speakers (Realtek(R) Au
 audio_engine._render_stop_event.set()  # clean up the thread this test started
 audio_engine._render_thread.join(timeout=2)
 print("  /api/render_device OK (explicit device switch works)")
+
+r = client.get("/api/audio_sessions")
+body = r.get_json()
+assert r.status_code == 200 and "sessions" in body and body["mode"] == "system"
+print("  /api/audio_sessions OK")
+
+r = client.post("/api/capture_source", json={"mode": "bogus"})
+assert r.status_code == 400
+r = client.post("/api/capture_source", json={"mode": "process", "target": ""})
+assert r.status_code == 400, "process mode with no target should be rejected"
+print("  /api/capture_source OK (rejects invalid input)")
+
+print("[test] per-app audio dispatcher: three failure modes, three different responses...")
+import audio_engine  # noqa: E402  (already imported above; re-import is a no-op)
+import types as _types
+_orig_mode = webapp.config.get("capture_mode")
+_orig_target = webapp.config.get("capture_target_name")
+
+
+def _with_fake_per_app_audio(fake_module_or_none, target_name, body):
+    webapp.config["capture_mode"] = "process"
+    webapp.config["capture_target_name"] = target_name
+    if fake_module_or_none is None:
+        sys.modules["per_app_audio"] = None  # the documented way to make `import x` raise ImportError
+    else:
+        sys.modules["per_app_audio"] = fake_module_or_none
+    try:
+        body()
+    finally:
+        sys.modules.pop("per_app_audio", None)
+        webapp.config["capture_mode"] = _orig_mode
+        webapp.config["capture_target_name"] = _orig_target
+
+
+try:
+    # (a) can't even be imported (e.g. pycaw/comtypes missing -- a non-
+    # Windows box, or an old Windows without process-loopback support):
+    # this is permanent for the rest of the run, so fall back for good.
+    def _check_a():
+        audio_engine._capture_loop_process(threading.Event())  # must not raise
+        assert webapp.config["capture_mode"] == "system", \
+            "an unimportable per-app backend should fall back to whole-system capture"
+    _with_fake_per_app_audio(None, "spotify.exe", _check_a)
+    print("  OK (unimportable backend falls back to system mode)")
+
+    # (b) imports fine, but listing sessions blew up right now (e.g. a
+    # transient COM error): don't punish that with a permanent fallback.
+    def _check_b():
+        audio_engine._capture_loop_process(threading.Event())  # must not raise
+        assert webapp.config["capture_mode"] == "process", \
+            "a transient listing failure must NOT force a fallback to system mode"
+    broken = _types.ModuleType("per_app_audio")
+    broken.list_audio_sessions = lambda: (_ for _ in ()).throw(OSError("simulated COM hiccup"))
+    _with_fake_per_app_audio(broken, "spotify.exe", _check_b)
+    print("  OK (a transient listing error is a clean no-op, not a fallback)")
+
+    # (c) backend works fine, target just isn't running yet.
+    def _check_c():
+        audio_engine._capture_loop_process(threading.Event())  # not found -- clean no-op
+        assert webapp.config["capture_mode"] == "process", \
+            "target simply not running (yet) must NOT force a fallback to system mode"
+    fake = _types.ModuleType("per_app_audio")
+    fake.list_audio_sessions = lambda: [{"pid": 123, "name": "chrome.exe"}]
+    _with_fake_per_app_audio(fake, "definitely_not_a_running_app.exe", _check_c)
+    print("  OK (target not currently running is a clean no-op, not a fallback)")
+finally:
+    webapp.config["capture_mode"] = _orig_mode
+    webapp.config["capture_target_name"] = _orig_target
 
 wav = webapp.wav_header(44100, 2, 2)
 assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE" and b"fmt " in wav and b"data" in wav
@@ -282,6 +353,43 @@ mgr.watchdog_tick(base)
 assert zc.play_count == 1, "idle speaker should be claimed at boot"
 assert zb.play_count == 0, "actively-playing other source must stay untouched"
 webapp.config["speakers"] = _wd_saved_speakers  # don't leak fake speakers to config.json
+print("  OK")
+
+print("[test] watchdog periodic resync: reconnects a long-running stream to reset drift...")
+uid_d = "RINCON_DDDD0004"
+zd = FakeZone(uid_d, f"{base}/stream/{uid_d}.wav", "PLAYING")  # already streaming ours
+mgr2 = sonos_ctl.SpeakerManager()
+mgr2.speakers[uid_d] = zd
+mgr2._boot_started.add(uid_d)  # as if this speaker has been running for a while already
+mgr2._last_auto_restart[uid_d] = time.monotonic()  # just (re)started -- fresh connection
+webapp.config["speakers"][uid_d] = {"enabled": True, "volume": 50}
+try:
+    mgr2.watchdog_tick(base)
+    assert zd.play_count == 0, "a freshly-(re)started stream must not be reconnected yet"
+    assert mgr2.streams[uid_d] is True
+
+    mgr2._last_auto_restart[uid_d] = time.monotonic() - sonos_ctl.RESYNC_INTERVAL_SECONDS - 1
+    mgr2.watchdog_tick(base)
+    assert zd.play_count == 1, \
+        "a stream running past RESYNC_INTERVAL_SECONDS should be silently reconnected"
+    assert mgr2.streams[uid_d] is True
+finally:
+    webapp.config["speakers"].pop(uid_d, None)
+print("  OK")
+
+print("[test] reconnect_all_streaming: only touches speakers actually streaming ours...")
+uid_e = "RINCON_EEEE0005"
+ze = FakeZone(uid_e, f"{base}/stream/{uid_e}.wav", "PLAYING")
+uid_f = "RINCON_FFFF0006"
+zf = FakeZone(uid_f, "x-sonos-spotify:some_song", "PLAYING")  # enabled, but playing something else
+mgr3 = sonos_ctl.SpeakerManager()
+mgr3.speakers[uid_e] = ze
+mgr3.speakers[uid_f] = zf
+mgr3.streams[uid_e] = True
+mgr3.streams[uid_f] = False
+mgr3.reconnect_all_streaming(base)
+assert ze.play_count == 1, "a speaker actively streaming our audio must be reconnected"
+assert zf.play_count == 0, "a speaker not currently streaming ours must be left alone"
 print("  OK")
 
 print("[test] startup: default speaker + new-speaker-enabled default...")
@@ -395,6 +503,21 @@ if sys.platform == "win32":
     _ct.WinDLL("kernel32").CloseHandle(_h1)  # release so nothing wedges
 else:
     assert _h2 is not None, "non-Windows: lock is a no-op, always granted"
+print("  OK")
+
+print("[test] update checker: version compare, and the route never touches the network...")
+import updater  # noqa: E402
+assert updater._parse_version("v1.2.10") > updater._parse_version("1.2.9"), \
+    "1.2.10 must sort newer than 1.2.9 (a plain string compare gets this backwards)"
+assert updater._parse_version("v1.2.5") == updater._parse_version("1.2.5")
+assert not (updater._parse_version("1.2.5") > updater._parse_version("1.2.5"))
+# check_for_update_async() is never called anywhere in this test run, so the
+# cache must still be in its untouched default state -- and the route must
+# just read that cache, not reach out to GitHub itself.
+status = updater.get_status()
+assert status["checked"] is False and status["update_available"] is False
+r = client.get("/api/update_status")
+assert r.status_code == 200 and r.get_json() == status
 print("  OK")
 
 print("[test] diagnostics module...")

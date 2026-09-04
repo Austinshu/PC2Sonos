@@ -191,6 +191,71 @@ def get_lan_ip():
 
 
 def capture_loop(stop_event):
+    """Dispatches to whole-system or per-application capture based on
+    config['capture_mode'], and re-dispatches every time the underlying
+    loop returns (target app not running yet, or it just closed) so
+    switching modes or waiting for an app to launch doesn't require
+    restarting the thread from outside."""
+    while not stop_event.is_set():
+        if config.get("capture_mode") == "process" and config.get("capture_target_name"):
+            _capture_loop_process(stop_event)
+            if stop_event.is_set():
+                return
+            time.sleep(2)  # target not running (yet) -- keep checking
+            continue
+        _capture_loop_system(stop_event)
+        return  # only returns on stop_event or a permanently-missing cable
+
+
+def _capture_loop_process(stop_event):
+    """One attempt at per-application capture (see per_app_audio.py) of
+    config['capture_target_name']. Returns (without raising) as soon as
+    that stops working for any reason -- the app closed, activation was
+    refused for it, or capture_loop's caller switched modes -- so the
+    caller can decide what to do next; this deliberately does NOT fall
+    back to whole-system capture on failure, since silently streaming
+    every app's audio when the user asked to scope this to just one
+    would violate the whole point of picking a specific app."""
+    try:
+        import per_app_audio
+    except Exception as e:
+        print(f"[audio] per-app capture unavailable on this system ({e}); "
+              f"switching back to whole-system capture")
+        config["capture_mode"] = "system"
+        return
+
+    target_name = config["capture_target_name"]
+    try:
+        sessions = per_app_audio.list_audio_sessions()
+    except Exception as e:
+        # a real (importable, otherwise working) per_app_audio hit a
+        # transient error listing sessions -- e.g. a COM hiccup -- don't
+        # punish that by disabling the feature; just retry like "not
+        # found yet" does
+        print(f"[audio] couldn't list audio sessions: {e}")
+        return
+    pid = next((s["pid"] for s in sessions if s["name"].lower() == target_name.lower()), None)
+    if pid is None:
+        return  # not running (yet) -- capture_loop will retry shortly
+
+    configured = {"done": False}
+
+    def on_chunk(pcm, rate, channels, width):
+        if not configured["done"]:
+            config["sample_rate"] = rate
+            config["channels"] = channels
+            configured["done"] = True
+        broadcaster.publish(pcm)
+
+    print(f"[audio] capturing '{target_name}' (pid {pid}) only -- "
+          f"everything else on this PC stays out of the Sonos stream")
+    try:
+        per_app_audio.capture_loop(pid, stop_event, on_chunk)
+    except Exception as e:
+        print(f"[audio] per-app capture of '{target_name}' failed: {e}")
+
+
+def _capture_loop_system(stop_event):
     """Reads PCM from the virtual cable and publishes it to the
     broadcaster -- the single source both the Sonos streams and the local
     delayed-render path draw from, so if this stops, everything downstream
@@ -384,22 +449,64 @@ def _render_session(stop_event):
         stream.close()
 
 
-_threads = []
 _render_stop_event = None
 _render_thread = None
 _render_lock = threading.Lock()
 
+_capture_stop_event = None
+_capture_thread = None
+_capture_lock = threading.Lock()
+
 
 def start_audio_engine(stop_event):
-    global _render_stop_event, _render_thread
-    t1 = threading.Thread(target=capture_loop, args=(stop_event,), daemon=True)
-    t1.start()
-    _threads.append(t1)
+    global _render_stop_event, _render_thread, _capture_stop_event, _capture_thread
+    with _capture_lock:
+        _capture_stop_event = threading.Event()
+        _capture_thread = threading.Thread(target=capture_loop, args=(_capture_stop_event,), daemon=True)
+        _capture_thread.start()
 
     with _render_lock:
         _render_stop_event = threading.Event()
         _render_thread = threading.Thread(target=render_loop, args=(_render_stop_event,), daemon=True)
         _render_thread.start()
+
+
+def restart_capture(new_mode=None, new_target_name=None):
+    """Stop the current capture thread and start a new one, picking up a
+    newly-chosen audio source (whole system vs. one application). Used by
+    the dashboard's audio-source picker.
+
+    Whole-system and per-app capture run at different, hardcoded sample
+    rates (see per_app_audio.py) -- so switching between them changes the
+    actual PCM format on the fly. Restart the render thread (it only reads
+    config['sample_rate']/['channels'] once, at the start of each render
+    session) and force every currently-streaming Sonos speaker to
+    reconnect (its WAV header was generated from whatever the format was
+    when THAT connection started, and there's no way to update it mid-
+    stream) so nothing downstream is left decoding new-format bytes
+    against a stale format."""
+    global _capture_stop_event, _capture_thread
+    from config import save_config
+    if new_mode is not None:
+        config["capture_mode"] = new_mode
+    if new_target_name is not None:
+        config["capture_target_name"] = new_target_name
+    if new_mode is not None or new_target_name is not None:
+        save_config(config)
+    with _capture_lock:
+        if _capture_stop_event is not None:
+            _capture_stop_event.set()
+        if _capture_thread is not None:
+            _capture_thread.join(timeout=3)
+        _capture_stop_event = threading.Event()
+        _capture_thread = threading.Thread(target=capture_loop, args=(_capture_stop_event,), daemon=True)
+        _capture_thread.start()
+    restart_render()
+    try:
+        from sonos_ctl import speaker_mgr
+        speaker_mgr.reconnect_all_streaming(f"http://{get_lan_ip()}:{config['http_port']}")
+    except Exception as e:
+        print(f"[audio] couldn't resync Sonos streams after a capture-source change: {e}")
 
 
 def restart_render(new_device_substr=None):

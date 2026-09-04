@@ -104,6 +104,7 @@ from audio_engine import start_audio_engine, get_lan_ip  # noqa: E402
 from config import config  # noqa: E402
 from sonos_ctl import speaker_mgr  # noqa: E402
 from diagnostics import install_global_exception_logging, system_snapshot  # noqa: E402
+from updater import check_for_update_async  # noqa: E402
 import webapp  # noqa: E402
 
 
@@ -158,6 +159,11 @@ def main():
     # bug we'll never see" and "someone else's PC has a bug we can
     # actually read about."
     install_global_exception_logging()
+
+    # The one outbound internet request this app ever makes on its own,
+    # fired once per launch and never repeated for the rest of the run
+    # (see updater.py) -- the dashboard just displays whatever this finds.
+    check_for_update_async()
 
     stop_event = threading.Event()
     # set after stream_keeper's first watchdog pass -- the on_demand

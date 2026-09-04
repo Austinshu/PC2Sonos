@@ -33,6 +33,8 @@ import time
 import winreg
 from pathlib import Path
 
+from version import VERSION
+
 APP_NAME = "PC2Sonos"
 DASHBOARD = "http://127.0.0.1:5757"
 UNINSTALL_KEY = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{APP_NAME}"
@@ -211,7 +213,7 @@ def register_uninstaller(exe_path, uninstall_exe_path):
     try:
         with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, UNINSTALL_KEY) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_NAME)
-            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "1.2.5")
+            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, VERSION)
             winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, APP_NAME)
             winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{uninstall_exe_path}"')
             winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(exe_path))

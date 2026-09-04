@@ -1,4 +1,5 @@
 soco
+requests
 pycaw
 comtypes
 pyaudiowpatch

@@ -17,6 +17,20 @@ from config import config, save_config
 # for a speaker that's actually there on the LAN.
 soco_config.REQUEST_TIMEOUT = 4.0
 
+# How long a single Sonos stream connection is allowed to run before the
+# watchdog silently reconnects it. Our own outgoing queue is bounded to a
+# ~200ms drift guard (see webapp.stream_wav), but that says nothing about
+# whatever Sonos does internally to a connection that's been open for
+# hours -- calibration on a long-running session has measured playback
+# delay creeping up well past that (641ms, then 911, 1090, 1270ms on the
+# same otherwise-idle system) with no code-side cause. A full app restart
+# is the only thing observed to reset it back to a clean sync, because
+# that forces Sonos to open a brand new connection -- so periodically
+# forcing that same reconnect ourselves gets the same reset without
+# requiring the user to actually close and reopen the app. The tradeoff
+# is a brief (~1s) audible blip while Sonos re-buffers.
+RESYNC_INTERVAL_SECONDS = 2 * 3600
+
 
 def _track_metadata(title):
     """DIDL-Lite metadata for our stream, built explicitly instead of
@@ -472,6 +486,19 @@ class SpeakerManager:
         except Exception as e:
             print(f"[sonos] failed to start stream on {zone.player_name}: {e}")
 
+    def reconnect_all_streaming(self, base_url):
+        """Force every currently-streaming speaker to reconnect and pull a
+        fresh WAV header. Needed whenever the actual PCM format changes
+        (sample rate/channels) -- e.g. the dashboard switching the capture
+        source between whole-system and a single app, which run at
+        different rates -- since an already-open Sonos connection has no
+        way to learn the format changed mid-stream; it would just keep
+        decoding new-format bytes against the old header forever."""
+        with self._lock:
+            items = [(uid, zone) for uid, zone in self.speakers.items() if self.streams.get(uid)]
+        for uid, zone in items:
+            self.start_stream(uid, zone, base_url)
+
     def stop_stream(self, uid, zone):
         try:
             _effective_zone(zone).stop()
@@ -521,7 +548,10 @@ class SpeakerManager:
             the restarts entirely)
           * a different source loaded      -> leave it alone (the user
             chose it); just reflect "idle" in the dashboard
-          * our stream PLAYING             -> reflect "streaming"
+          * our stream PLAYING             -> reflect "streaming", and
+            silently reconnect it once RESYNC_INTERVAL_SECONDS have
+            passed since it last (re)started, to reset whatever sync
+            drift a long-lived connection accumulates on Sonos's side
         """
         with self._lock:
             items = list(self.speakers.items())
@@ -558,6 +588,12 @@ class SpeakerManager:
 
             if ours and state == "PLAYING":
                 self.streams[uid] = True
+                now = time.monotonic()
+                if now - self._last_auto_restart.get(uid, 0) >= RESYNC_INTERVAL_SECONDS:
+                    print(f"[sonos] watchdog: periodic resync for {zone.player_name} "
+                          f"(reconnecting to reset any Sonos-side sync drift "
+                          f"from the long-running connection)")
+                    self.start_stream(uid, zone, base_url)
             elif ours:
                 self.streams[uid] = False
                 now = time.monotonic()

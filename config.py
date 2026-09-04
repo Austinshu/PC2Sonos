@@ -88,6 +88,14 @@ DEFAULT_CONFIG = {
     "capture_device_substr": "CABLE Output",
     # Blank = auto-pick the first real (non-virtual) WASAPI output device.
     "render_device_substr": "",
+    # "system" (default): capture whatever's playing through the virtual
+    # cable, i.e. everything. "process": capture only capture_target_name's
+    # audio (see per_app_audio.py), by exe name rather than PID since a
+    # relaunched app gets a new PID every time. Falls back to "system" at
+    # runtime if that process isn't currently running, isn't capturable
+    # this way, or this Windows version doesn't support it at all.
+    "capture_mode": "system",
+    "capture_target_name": "",
     # How long (ms) to hold back the LOCAL speaker output so it lines up
     # with the Sonos speakers. This is the number the dashboard slider
     # controls. Starts at 0 on a fresh install -- use the Auto button (or
