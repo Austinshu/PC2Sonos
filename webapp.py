@@ -132,9 +132,9 @@ DASHBOARD_HTML = """
   <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
     <label>PC speaker volume boost &mdash; Windows' own volume only controls what PC2Sonos captures, not what this device plays back; use this if an aux/line-out speaker is too quiet even at 100% Windows volume</label>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-      <input type="range" min="0" max="300" step="1" id="localGain" value="{{local_gain_percent}}"
+      <input type="range" min="0" max="500" step="1" id="localGain" value="{{local_gain_percent}}"
              oninput="syncLocalGain('slider')" style="flex:1; min-width:150px;">
-      <input type="number" min="0" max="300" step="1" id="localGainNum" value="{{local_gain_percent}}"
+      <input type="number" min="0" max="500" step="1" id="localGainNum" value="{{local_gain_percent}}"
              oninput="syncLocalGain('number')"
              style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
       <span>%</span>
@@ -142,6 +142,9 @@ DASHBOARD_HTML = """
     </div>
     <div style="font-size:11px; color:#777; margin-top:6px;">
       100% = unchanged passthrough (the original behavior). Above 100% amplifies the signal with a soft limiter -- loud peaks compress gradually instead of clipping, so it stays clean well past 100%.
+    </div>
+    <div id="localGainWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:4px;">
+      &#9888; Above 100% is past the source's natural level -- the higher you go, the more the limiter has to compress to stay clean.
     </div>
   </div>
   <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
@@ -169,6 +172,9 @@ DASHBOARD_HTML = """
         <span style="font-size:11px; color:#777;">Treble</span>
       </div>
       <button onclick="resetLocalEq()" style="background:#333; color:#eee; font-weight:400; align-self:flex-start; padding:4px 10px; font-size:12px;">Reset</button>
+    </div>
+    <div id="eqWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:6px;">
+      &#9888; Past &plusmn;6dB starts sounding less like "more/less bass" and more like a different speaker -- large boosts can also introduce noise.
     </div>
   </div>
 </div>
@@ -382,9 +388,10 @@ function syncLocalGain(source){
   } else {
     let v = parseInt(num.value);
     if (isNaN(v)) return;
-    v = Math.max(0, Math.min(300, v));
+    v = Math.max(0, Math.min(500, v));
     slider.value = v;
   }
+  document.getElementById('localGainWarning').style.display = (parseInt(slider.value) > 100) ? 'block' : 'none';
 }
 async function setLocalGain(){
   const v = document.getElementById('localGain').value;
@@ -398,6 +405,8 @@ function setLocalEq(){
   document.getElementById('eqBassVal').textContent = bass + ' dB';
   document.getElementById('eqMidVal').textContent = mid + ' dB';
   document.getElementById('eqTrebleVal').textContent = treble + ' dB';
+  const extreme = Math.max(Math.abs(bass), Math.abs(mid), Math.abs(treble)) > 6;
+  document.getElementById('eqWarning').style.display = extreme ? 'block' : 'none';
   // debounce -- dragging a slider fires oninput continuously, no need
   // to POST every single intermediate value
   if (eqDebounce) clearTimeout(eqDebounce);
@@ -547,6 +556,8 @@ loadAudioSessions();
 loadSeedIps();
 checkDonatePrompt();
 checkUpdate();
+syncLocalGain('slider');  // shows the warning immediately if the saved value is already past 100%
+setLocalEq();  // shows the warning immediately if a saved EQ band is already past +/-6dB
 _updatePoll = setInterval(checkUpdate, 3000);
 setInterval(refresh, 4000);
 </script>
@@ -672,11 +683,12 @@ def api_set_delay():
 
 @app.route("/api/local_gain", methods=["POST"])
 def api_set_local_gain():
-    # percent: 0-300, mapped to a 0.0-3.0 multiplier applied in
+    # percent: 0-500, mapped to a 0.0-5.0 multiplier applied in
     # audio_engine's render loop. Read fresh every chunk there, so this
-    # takes effect immediately -- no render restart needed.
+    # takes effect immediately -- no render restart needed. 0-100% is the
+    # safe/no-warning zone; the dashboard shows a warning above that.
     data = request.get_json(force=True)
-    percent = max(0, min(300, int(data.get("percent", 100))))
+    percent = max(0, min(500, int(data.get("percent", 100))))
     config["local_render_gain"] = percent / 100.0
     save_config(config)
     return jsonify({"ok": True})

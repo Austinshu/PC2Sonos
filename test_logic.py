@@ -180,10 +180,10 @@ print("  /api/render_device OK (explicit device switch works)")
 r = client.post("/api/local_gain", json={"percent": 150})
 assert r.status_code == 200 and webapp.config["local_render_gain"] == 1.5
 r = client.post("/api/local_gain", json={"percent": 999})  # clamps, doesn't error
-assert r.status_code == 200 and webapp.config["local_render_gain"] == 3.0
+assert r.status_code == 200 and webapp.config["local_render_gain"] == 5.0
 r = client.post("/api/local_gain", json={"percent": 100})  # restore default for later tests
 assert webapp.config["local_render_gain"] == 1.0
-print("  /api/local_gain OK (clamped to 0-300%)")
+print("  /api/local_gain OK (clamped to 0-500%)")
 
 import numpy as _np  # noqa: E402
 import struct as _struct  # noqa: E402

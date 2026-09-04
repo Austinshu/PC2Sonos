@@ -113,12 +113,22 @@ has no effect on what PC2Sonos plays back afterward through your real PC
 speakers/headphones. If that device sounds too quiet even at 100%
 Windows volume (common with a passive speaker on a line-level aux input),
 use the **PC speaker volume boost** slider next to the device picker.
-100% is the original, unchanged passthrough; above that amplifies the
-signal using a soft limiter, not a hard clip -- loud peaks compress
-gradually as they approach full scale instead of slamming flat, so
-raising the slider feels like a genuine volume increase rather than a
-sudden jump into harsh distortion. This only affects the local speaker
-path; Sonos speakers keep their own independent volume control.
+100% is the original, unchanged passthrough -- that's also the ceiling
+of the safe/no-warning zone. The slider goes up to 500%, using a soft
+limiter rather than a hard clip above 100% so loud peaks compress
+gradually as they approach full scale instead of slamming flat; the
+dashboard shows a warning past 100% as a reminder that you're past the
+source's natural level, not because anything's about to break. This
+only affects the local speaker path; Sonos speakers keep their own
+independent volume control.
+
+There's also a **bass/mid/treble EQ** right below it, local speaker path
+only (Sonos speakers keep their own EQ in the Sonos app) -- a low shelf
+at 200Hz, a peak at 1000Hz, and a high shelf at 5000Hz, each &plusmn;12dB.
+0dB on all three is a true passthrough; a warning appears past
+&plusmn;6dB on any band, since a plain 3-band shelf/peak EQ pushed that
+far starts sounding like a different speaker rather than "more/less
+bass," and can introduce noise.
 
 ### Optional: start faster after a reboot
 

@@ -106,8 +106,9 @@ DEFAULT_CONFIG = {
     # app does with it afterward, so a quiet aux speaker has no other way
     # to get louder than the source signal already is. 1.0 = unchanged
     # passthrough (the old, only-ever behavior); the dashboard slider
-    # shows this as a 0-300% range. Sonos speakers are unaffected -- they
-    # have their own independent volume (config['speakers'][uid]['volume']).
+    # shows this as a 0-500% range, with 0-100% being the safe/no-warning
+    # zone. Sonos speakers are unaffected -- they have their own
+    # independent volume (config['speakers'][uid]['volume']).
     "local_render_gain": 1.0,
     # Bass/mid/treble EQ, LOCAL speaker path only (0.0 dB = flat/off,
     # each -12..+12 in the dashboard). Sonos speakers already have their
