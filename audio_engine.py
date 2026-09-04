@@ -22,6 +22,7 @@ import socket
 import threading
 import time
 
+import numpy as np
 import pyaudiowpatch as pyaudio
 
 from config import config
@@ -336,6 +337,35 @@ class _NoRenderDevice(Exception):
     be retried."""
 
 
+_GAIN_KNEE = 0.7  # start compressing at 70% of full scale (~ -3dBFS)
+
+
+def _apply_local_gain(pcm_bytes, gain):
+    """Amplifies 16-bit PCM by `gain`, soft-limiting instead of hard-
+    clipping as the signal approaches full scale.
+
+    A plain linear multiply (audioop.mul) hard-clips: the instant any
+    sample crosses the ceiling, it gets slammed flat rather than
+    compressed, which sounds like a sudden jump into harsh distortion --
+    disproportionately loud to the ear regardless of how small the
+    nominal gain increase was. That bites hard here because a lot of
+    real source audio already sits close to full scale (apps commonly
+    master near 0dBFS), so even a modest boost could push a meaningful
+    chunk of samples straight into that wall. A soft knee lets loud
+    peaks compress gradually above _GAIN_KNEE instead, so raising the
+    slider actually feels like a smooth volume increase across its
+    whole range instead of "clean, then suddenly blown out."""
+    arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) * (gain / 32768.0)
+    mag = np.abs(arr)
+    over = mag > _GAIN_KNEE
+    if np.any(over):
+        excess = mag[over] - _GAIN_KNEE
+        compressed = _GAIN_KNEE + np.tanh(excess / (1.0 - _GAIN_KNEE)) * (1.0 - _GAIN_KNEE)
+        arr[over] = np.sign(arr[over]) * compressed
+    arr = np.clip(arr, -1.0, 1.0) * 32767.0
+    return arr.astype(np.int16).tobytes()
+
+
 def render_loop(stop_event):
     """Plays the SAME audio back out to your real speakers, held behind
     by config['local_delay_ms'] milliseconds, so it lines up with the
@@ -420,11 +450,8 @@ def _render_session(stop_event):
             # the virtual cable -- it has no effect on what this render
             # path plays back afterward, so an aux/line-level speaker that
             # needs more than that source signal provides has no other
-            # knob to turn. Gain is applied here, after resampling, right
-            # before the device write; audioop.mul saturates rather than
-            # wrapping on overflow, so a high gain clips loud peaks instead
-            # of producing wraparound noise -- audible distortion at the
-            # extreme, not corruption.
+            # knob to turn. Gain is applied (see _apply_local_gain) here,
+            # after resampling, right before the device write.
             gain = config.get("local_render_gain", 1.0)
             try:
                 chunk = q.get(timeout=1)
@@ -452,7 +479,7 @@ def _render_session(stop_event):
                         out, sample_width, render_channels,
                         capture_rate, render_rate, resample_state)
                 if out and gain != 1.0:
-                    out = audioop.mul(out, sample_width, gain)
+                    out = _apply_local_gain(out, gain)
                 if out:
                     stream.write(out)
     finally:

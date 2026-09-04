@@ -114,10 +114,11 @@ speakers/headphones. If that device sounds too quiet even at 100%
 Windows volume (common with a passive speaker on a line-level aux input),
 use the **PC speaker volume boost** slider next to the device picker.
 100% is the original, unchanged passthrough; above that amplifies the
-signal, so very loud peaks can start to clip/distort at high settings --
-the same tradeoff as any volume boost pushed past a source's natural
-level. This only affects the local speaker path; Sonos speakers keep
-their own independent volume control.
+signal using a soft limiter, not a hard clip -- loud peaks compress
+gradually as they approach full scale instead of slamming flat, so
+raising the slider feels like a genuine volume increase rather than a
+sudden jump into harsh distortion. This only affects the local speaker
+path; Sonos speakers keep their own independent volume control.
 
 ### Optional: start faster after a reboot
 

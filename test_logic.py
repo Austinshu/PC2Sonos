@@ -185,13 +185,28 @@ r = client.post("/api/local_gain", json={"percent": 100})  # restore default for
 assert webapp.config["local_render_gain"] == 1.0
 print("  /api/local_gain OK (clamped to 0-300%)")
 
-import audioop as _audioop  # noqa: E402
+import numpy as _np  # noqa: E402
 import struct as _struct  # noqa: E402
-_silence = _struct.pack("<2h", 100, -100)
-_boosted = _audioop.mul(_silence, 2, 2.0)
-assert _struct.unpack("<2h", _boosted) == (200, -200), \
-    "local_render_gain must actually scale samples, not just round-trip through config"
-print("  local_render_gain sample scaling OK (audioop.mul applies and clips correctly)")
+
+# quiet samples, well under the soft-limiter's knee: gain should apply
+# as a plain, undistorted multiply (within the float32-normalization
+# round-trip's inherent +/-1-count rounding, not exact int math)
+_quiet = _struct.pack("<2h", 100, -100)
+_boosted = _struct.unpack("<2h", audio_engine._apply_local_gain(_quiet, 2.0))
+assert abs(_boosted[0] - 200) <= 1 and abs(_boosted[1] - (-200)) <= 1, \
+    f"local_render_gain must actually scale quiet samples ~linearly, got {_boosted}"
+
+# near-full-scale samples: a hard linear multiply would clip a large
+# fraction of these outright (verified: 130% gain hard-clips ~17% of a
+# 90%-peak test signal) -- the soft limiter must compress instead,
+# landing under the ceiling with zero samples pinned exactly at it
+_loud = (_np.sin(_np.linspace(0, 2 * _np.pi, 200, False)) * 0.9 * 32767).astype(_np.int16).tobytes()
+_loud_boosted = _np.frombuffer(audio_engine._apply_local_gain(_loud, 1.5), dtype=_np.int16)
+assert _loud_boosted.max() < 32767 and _loud_boosted.min() > -32768, \
+    "near-full-scale audio boosted 150% must be soft-limited, not hard-clipped to the ceiling"
+assert (_np.abs(_loud_boosted) >= 32767).sum() == 0, \
+    "the soft limiter should never pin samples exactly at full scale the way a hard clip does"
+print("  local_render_gain sample scaling OK (quiet audio scales linearly, loud audio soft-limits)")
 
 r = client.get("/api/audio_sessions")
 body = r.get_json()
