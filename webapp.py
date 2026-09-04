@@ -74,27 +74,99 @@ DONATE_PROMPT_INTERVAL_SECONDS = 7 * 24 * 3600
 
 STYLE_BLOCK = """
 <style>
-  body { font-family: -apple-system, Segoe UI, sans-serif; background:#111; color:#eee; padding:24px; max-width:640px; margin:0 auto; }
-  h1 { font-size:20px; margin-bottom:4px; }
-  .sub { color:#888; font-size:13px; margin-bottom:20px; }
-  .card { background:#1c1c1c; border-radius:10px; padding:16px 18px; margin-bottom:16px; }
-  .speaker { display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:10px 0; border-bottom:1px solid #2a2a2a; }
+  * { box-sizing:border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    background:#0e0e0e; color:#eee; padding:28px 24px; max-width:640px; margin:0 auto;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1 { font-size:21px; font-weight:700; letter-spacing:-0.02em; margin:0 0 4px; }
+  .sub { color:#888; font-size:13px; margin-bottom:22px; }
+  .sub a { text-decoration:none; }
+  .sub a:hover { text-decoration:underline; }
+
+  .card {
+    background:#1a1a1a; border:1px solid #262626; border-radius:12px;
+    padding:16px 18px; margin-bottom:14px;
+  }
+  details.card { padding:0; }
+  details.card > summary { list-style:none; }
+  details.card > summary::-webkit-details-marker { display:none; }
+  details.card > summary::before {
+    content:"\\25B8"; display:inline-block; margin-right:8px; color:#777;
+    transition:transform .15s ease;
+  }
+  details.card[open] > summary::before { transform:rotate(90deg); }
+
+  label { font-size:13px; color:#aaa; display:block; margin-bottom:8px; line-height:1.4; }
+
+  button {
+    background:#1db954; border:none; color:#000; font-weight:600;
+    font-size:13px; padding:7px 15px; border-radius:8px; cursor:pointer;
+    transition:filter .12s ease, transform .08s ease;
+  }
+  button:hover { filter:brightness(1.12); }
+  button:active { transform:scale(0.97); }
+  button:disabled { filter:grayscale(0.6) brightness(0.8); cursor:default; }
+
+  /* range sliders: flat, custom-styled track + thumb instead of the
+     browser's raw OS-default control. Horizontal ones (delay, boost,
+     per-speaker volume) get a green fill up to the current value via
+     paintRange() in the page script; the vertical EQ faders below skip
+     the fill since they're bidirectional around a 0dB center. */
+  input[type=range] {
+    width:150px; height:20px; -webkit-appearance:none; appearance:none;
+    background:#333; border-radius:99px; outline:none; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-runnable-track { height:6px; border-radius:99px; background:transparent; }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; appearance:none; width:16px; height:16px;
+    margin-top:-5px; border-radius:50%; background:#fff;
+    box-shadow:0 1px 3px rgba(0,0,0,0.5); border:none;
+    transition:transform .1s ease;
+  }
+  input[type=range]:hover::-webkit-slider-thumb { transform:scale(1.15); }
+  input[type=range]:active::-webkit-slider-thumb { transform:scale(1.25); }
+
+  input[type=number], input[type=text], select {
+    background:#111; color:#eee; border:1px solid #333; border-radius:8px;
+    padding:6px 8px; font-size:13px; transition:border-color .12s ease;
+  }
+  input[type=number]:focus, input[type=text]:focus, select:focus {
+    outline:none; border-color:#1db954;
+  }
+
+  .speaker { display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:11px 0; border-bottom:1px solid #232323; }
   .speaker:last-child { border-bottom:none; }
   .name { font-weight:600; min-width:150px; }
-  input[type=range] { width:150px; }
-  .toggle { transform: scale(1.3); }
-  label { font-size:13px; color:#aaa; display:block; margin-bottom:8px; }
-  button { background:#1db954; border:none; color:#000; font-weight:600; padding:6px 14px; border-radius:6px; cursor:pointer; }
-  .status { font-size:12px; padding:2px 8px; border-radius:10px; }
+
+  /* toggle switch, replacing a bare scaled-up checkbox */
+  .switch { position:relative; display:inline-block; width:38px; height:22px; flex-shrink:0; }
+  .switch input { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
+  .switch-track {
+    position:absolute; inset:0; background:#333; border-radius:22px;
+    transition:background-color .15s ease; pointer-events:none;
+  }
+  .switch-track::before {
+    content:""; position:absolute; width:16px; height:16px; left:3px; top:3px;
+    background:#eee; border-radius:50%; transition:transform .15s ease;
+    box-shadow:0 1px 2px rgba(0,0,0,0.4);
+  }
+  .switch input:checked + .switch-track { background:#1db954; }
+  .switch input:checked + .switch-track::before { transform:translateX(16px); background:#0a2914; }
+  .switch input:focus-visible + .switch-track { outline:2px solid #1db954; outline-offset:2px; }
+
+  .status { font-size:11px; padding:3px 9px; border-radius:99px; font-weight:600; letter-spacing:.02em; }
   .on { background:#0f3d1f; color:#4caf50; }
-  .off { background:#3a2626; color:#888; }
-  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.65); align-items:center; justify-content:center; z-index:1000; }
+  .off { background:#2a2a2a; color:#888; }
+
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:1000; }
   .modal-overlay.show { display:flex; }
-  .modal-box { background:#1c1c1c; border-radius:12px; padding:22px; max-width:380px; width:90%; box-shadow:0 10px 40px rgba(0,0,0,0.5); }
+  .modal-box { background:#1a1a1a; border:1px solid #2a2a2a; border-radius:14px; padding:22px; max-width:380px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.6); }
   .modal-box h3 { margin:0 0 10px 0; font-size:16px; }
   .modal-box p { font-size:13px; color:#ccc; line-height:1.5; margin:0 0 18px 0; }
   .modal-actions { display:flex; justify-content:flex-end; gap:10px; }
-  .btn-cancel { background:#333; color:#eee; }
+  .btn-cancel { background:#2a2a2a; color:#eee; }
 </style>
 """
 
@@ -223,21 +295,21 @@ DASHBOARD_HTML = """
       <label>PC speaker EQ &mdash; bass/mid/treble for the local speaker path only (Sonos speakers keep their own EQ in the Sonos app)</label>
       <div id="eqSliders" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;">
         <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
-          <input type="range" min="-24" max="24" step="1" id="eqBass" value="{{eq_bass_db}}"
+          <input type="range" class="eq-fader" min="-24" max="24" step="1" id="eqBass" value="{{eq_bass_db}}"
                  oninput="setLocalEq()" orient="vertical"
                  style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
           <span id="eqBassVal" style="font-size:11px; color:#aaa;">{{eq_bass_db}} dB</span>
           <span style="font-size:11px; color:#777;">Bass</span>
         </div>
         <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
-          <input type="range" min="-24" max="24" step="1" id="eqMid" value="{{eq_mid_db}}"
+          <input type="range" class="eq-fader" min="-24" max="24" step="1" id="eqMid" value="{{eq_mid_db}}"
                  oninput="setLocalEq()" orient="vertical"
                  style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
           <span id="eqMidVal" style="font-size:11px; color:#aaa;">{{eq_mid_db}} dB</span>
           <span style="font-size:11px; color:#777;">Mid</span>
         </div>
         <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
-          <input type="range" min="-24" max="24" step="1" id="eqTreble" value="{{eq_treble_db}}"
+          <input type="range" class="eq-fader" min="-24" max="24" step="1" id="eqTreble" value="{{eq_treble_db}}"
                  oninput="setLocalEq()" orient="vertical"
                  style="writing-mode: vertical-lr; direction: rtl; width:24px; height:100px;">
           <span id="eqTrebleVal" style="font-size:11px; color:#aaa;">{{eq_treble_db}} dB</span>
@@ -304,6 +376,18 @@ DASHBOARD_HTML = """
 </div>
 
 <script>
+function paintRange(el){
+  // colors the track up to the current value, so the slider shows
+  // progress at a glance instead of a bare thumb on a flat bar -- only
+  // makes sense for one-directional 0-at-the-low-end sliders (delay,
+  // boost, per-speaker volume); the bidirectional EQ faders skip this
+  const min = parseFloat(el.min) || 0, max = parseFloat(el.max) || 100;
+  const pct = max > min ? 100 * (parseFloat(el.value) - min) / (max - min) : 0;
+  el.style.background = `linear-gradient(to right, #1db954 0%, #1db954 ${pct}%, #333 ${pct}%, #333 100%)`;
+}
+function paintAllRanges(){
+  document.querySelectorAll('input[type=range]:not(.eq-fader)').forEach(paintRange);
+}
 async function refresh(){
   const res = await fetch('/api/speakers');
   const data = await res.json();
@@ -322,14 +406,20 @@ async function refresh(){
     div.innerHTML = `
       <span onclick="setDefault('${s.uid}', ${s.is_default})" title="${starTitle}"
             style="cursor:pointer; font-size:16px; color:${s.is_default ? '#f5c518' : '#666'};">${star}</span>
-      <input type="checkbox" class="toggle" ${s.enabled ? 'checked' : ''} onchange="toggle('${s.uid}', this.checked)">
+      <label class="switch">
+        <input type="checkbox" ${s.enabled ? 'checked' : ''} onchange="toggle('${s.uid}', this.checked)">
+        <span class="switch-track"></span>
+      </label>
       <span class="name">${s.name}${grouped ? ` <span style="font-weight:400; color:#888; font-size:12px;">(grouped with ${s.grouped_with.join(', ')} &mdash; this also controls them)</span>` : ''}</span>
-      <input type="range" min="0" max="100" value="${s.volume}" onchange="setVol('${s.uid}', this.value)">
+      <input type="range" min="0" max="100" value="${s.volume}"
+             oninput="paintRange(this); this.nextElementSibling.textContent = this.value + '%'"
+             onchange="setVol('${s.uid}', this.value)">
       <span style="width:36px; display:inline-block;">${s.volume}%</span>
       <span class="status ${s.streaming ? 'on' : 'off'}">${s.streaming ? 'streaming' : 'idle'}</span>
     `;
     el.appendChild(div);
   });
+  paintAllRanges();
 }
 async function rescan(){
   const el = document.getElementById('rescanResult');
@@ -388,6 +478,7 @@ function syncDelay(source){
     v = Math.max(0, Math.min(4000, v));
     slider.value = v;
   }
+  paintRange(slider);
 }
 async function setDelay(){
   const v = document.getElementById('delay').value;
@@ -405,6 +496,7 @@ function syncLocalGain(source){
     slider.value = v;
   }
   document.getElementById('localGainWarning').style.display = (parseInt(slider.value) > 100) ? 'block' : 'none';
+  paintRange(slider);
 }
 async function setLocalGain(){
   const v = document.getElementById('localGain').value;
