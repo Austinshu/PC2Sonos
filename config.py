@@ -89,13 +89,15 @@ DEFAULT_CONFIG = {
     # Blank = auto-pick the first real (non-virtual) WASAPI output device.
     "render_device_substr": "",
     # "system" (default): capture whatever's playing through the virtual
-    # cable, i.e. everything. "process": capture only capture_target_name's
-    # audio (see per_app_audio.py), by exe name rather than PID since a
-    # relaunched app gets a new PID every time. Falls back to "system" at
-    # runtime if that process isn't currently running, isn't capturable
-    # this way, or this Windows version doesn't support it at all.
+    # cable, i.e. everything. "apps": capture and mix together only the
+    # apps named in capture_target_names (see per_app_audio.py), by exe
+    # name rather than PID since a relaunched app gets a new PID every
+    # time. Each named app is captured independently and joins/leaves the
+    # mix as it starts/exits -- one missing/uncapturable app doesn't take
+    # the others down with it. Falls back to "system" at runtime if
+    # per-app capture isn't available on this system at all.
     "capture_mode": "system",
-    "capture_target_name": "",
+    "capture_target_names": [],
     # How long (ms) to hold back the LOCAL speaker output so it lines up
     # with the Sonos speakers. This is the number the dashboard slider
     # controls. Starts at 0 on a fresh install -- use the Auto button (or
@@ -169,12 +171,28 @@ DEFAULT_CONFIG = {
 _lock = threading.RLock()
 
 
+def _migrate_single_app_capture(cfg):
+    """Older builds could only capture exactly one app at a time
+    (capture_mode='process' + a single capture_target_name). The
+    multi-app picker replaces that with capture_mode='apps' +
+    capture_target_names (a list) -- carry an existing single selection
+    forward as a one-item list instead of silently dropping it on
+    upgrade."""
+    old_target = cfg.pop("capture_target_name", None)
+    if cfg.get("capture_mode") == "process":
+        cfg["capture_mode"] = "apps" if old_target else "system"
+        if old_target and not cfg.get("capture_target_names"):
+            cfg["capture_target_names"] = [old_target]
+
+
 def load_config():
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r") as f:
                 cfg = json.load(f)
-            return {**DEFAULT_CONFIG, **cfg}
+            merged = {**DEFAULT_CONFIG, **cfg}
+            _migrate_single_app_capture(merged)
+            return merged
         except Exception:
             pass
     return dict(DEFAULT_CONFIG)

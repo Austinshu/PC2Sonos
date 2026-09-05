@@ -89,22 +89,27 @@ receiving audio. The dashboard opens in your browser on the very first
 run only; after that a small tray notification just confirms it started,
 and the dashboard is one click away on the tray icon.
 
-### Optional: stream just one app instead of the whole system
+### Optional: stream only specific apps instead of the whole system
 
 By default PC2Sonos streams everything your PC plays, the same way the
 underlying virtual-cable approach always has. If you'd rather only send
-one application's audio to Sonos -- music from a browser tab while
-notification sounds and everything else stay off Sonos, say -- open the
-**Audio source** card on the dashboard, click **Refresh** to list apps
-that have made sound recently, and pick one.
+particular applications' audio to Sonos -- music from a browser tab plus
+a game, while notification sounds and everything else stay off Sonos,
+say -- open the **Audio source** card on the dashboard, click **Refresh**
+to list apps that have made sound recently, and check as many as you
+want. They're mixed together into one stream; leave every box unchecked
+(or check "Whole system") to go back to sending everything.
 
 This uses a Windows feature (process-loopback capture) that needs Windows
 10 21H2 or newer, works best on Windows 11, and can't capture every
 app regardless of Windows version -- copy-protected playback and some
-elevated processes aren't capturable this way no matter what. If picking
-an app doesn't produce sound, switch back to "Whole system" for that app.
-Switching sources briefly reconnects Sonos and the local speaker path,
-since the two capture modes run at different audio sample rates.
+elevated processes aren't capturable this way no matter what. If checking
+an app doesn't produce sound, uncheck it and use "Whole system" instead.
+Each checked app joins or drops out of the mix independently as you open
+and close it -- one app not being capturable, or not running yet, doesn't
+stop the others from streaming. Switching between "Whole system" and any
+app selection briefly reconnects Sonos and the local speaker path, since
+the two capture modes run at different audio sample rates.
 
 ### Optional: boost a quiet local speaker
 
@@ -243,7 +248,7 @@ is shared with tools like SWYH.
   per-app mode, `per_app_audio.py`), delayed + volume-boosted render to
   your real speakers, fan-out to Sonos streams
 - `per_app_audio.py` -- per-application capture via Windows' process-
-  loopback WASAPI extension, for the "stream just one app" option
+  loopback WASAPI extension, for the "stream only specific apps" option
 - `sonos_ctl.py` -- Sonos discovery/control via SoCo, including the
   background watchdog that restarts dropped streams and periodically
   resyncs long-running ones to prevent drift

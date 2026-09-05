@@ -213,29 +213,89 @@ def get_lan_ip():
 def capture_loop(stop_event):
     """Dispatches to whole-system or per-application capture based on
     config['capture_mode'], and re-dispatches every time the underlying
-    loop returns (target app not running yet, or it just closed) so
-    switching modes or waiting for an app to launch doesn't require
-    restarting the thread from outside."""
+    loop returns (no selected app running yet, or the last one just
+    closed) so switching modes or waiting for an app to launch doesn't
+    require restarting the thread from outside."""
     while not stop_event.is_set():
-        if config.get("capture_mode") == "process" and config.get("capture_target_name"):
-            _capture_loop_process(stop_event)
+        if config.get("capture_mode") == "apps" and config.get("capture_target_names"):
+            _capture_loop_apps(stop_event)
             if stop_event.is_set():
                 return
-            time.sleep(2)  # target not running (yet) -- keep checking
+            time.sleep(2)  # nothing selected is running (yet) -- keep checking
             continue
         _capture_loop_system(stop_event)
         return  # only returns on stop_event or a permanently-missing cable
 
 
-def _capture_loop_process(stop_event):
-    """One attempt at per-application capture (see per_app_audio.py) of
-    config['capture_target_name']. Returns (without raising) as soon as
-    that stops working for any reason -- the app closed, activation was
-    refused for it, or capture_loop's caller switched modes -- so the
-    caller can decide what to do next; this deliberately does NOT fall
-    back to whole-system capture on failure, since silently streaming
-    every app's audio when the user asked to scope this to just one
-    would violate the whole point of picking a specific app."""
+# Every process-loopback capture uses this same hardcoded format (see
+# activate_process_loopback_client in per_app_audio.py -- GetMixFormat()
+# isn't available on this kind of stream, so Windows' own internal mix
+# format is used for all of them) -- meaning multiple selected apps can
+# always be mixed by simple sample-by-sample addition, with no resampling
+# step needed between sources.
+_APP_CAPTURE_RATE = 48000
+_APP_CAPTURE_CHANNELS = 2
+_APP_CAPTURE_WIDTH = 2  # bytes (16-bit PCM, after per_app_audio's own float->int16 conversion)
+
+
+class _AppSource:
+    """One selected app's live capture: its own background thread reading
+    from per_app_audio, feeding a small jitter buffer that _capture_loop_apps'
+    mixer drains at a fixed cadence. Kept separate per app so one app
+    stalling, closing, or never having been capturable in the first place
+    can't affect any of the others still in the mix."""
+
+    def __init__(self, name):
+        self.name = name
+        self.buf = bytearray()
+        self.buf_lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.thread = None
+
+    def on_chunk(self, pcm, *_rate_channels_width):
+        with self.buf_lock:
+            self.buf.extend(pcm)
+            # If the mixer ever falls behind (shouldn't happen in normal
+            # operation), don't let one slow/stalled source grow without
+            # bound -- cap at ~1s and drop the oldest audio.
+            max_bytes = _APP_CAPTURE_RATE * _APP_CAPTURE_CHANNELS * _APP_CAPTURE_WIDTH
+            if len(self.buf) > max_bytes:
+                del self.buf[:len(self.buf) - max_bytes]
+
+    def take(self, n_bytes):
+        """Returns exactly n_bytes, silence-padding if this source hasn't
+        buffered enough yet (e.g. it just started) rather than stalling
+        the whole mix waiting for it."""
+        with self.buf_lock:
+            if len(self.buf) >= n_bytes:
+                data = bytes(self.buf[:n_bytes])
+                del self.buf[:n_bytes]
+                return data
+            data = bytes(self.buf) + b"\x00" * (n_bytes - len(self.buf))
+            self.buf.clear()
+            return data
+
+
+_APP_RESCAN_INTERVAL_S = 1.0  # how often to check for selected apps launching/closing
+
+
+def _capture_loop_apps(stop_event):
+    """Per-application capture of one or more selected apps at once (see
+    config['capture_target_names']), mixed together into a single stream.
+    Each configured app gets its own dedicated per_app_audio capture
+    thread that starts as soon as that app is found running and stops
+    (without affecting any others still active) when it exits or its
+    capture fails -- so, unlike whole-system capture, a missing or
+    uncapturable app is never a fatal error, just one fewer source in the
+    mix. Falls back to whole-system capture if per-app capture isn't
+    available on this system at all.
+
+    Returns (without raising, exactly like _capture_loop_process used to)
+    as soon as NONE of the selected apps are currently running/capturable
+    -- both right at the start, and later if every source that had joined
+    the mix has since dropped out -- so the caller's retry-every-2s loop
+    takes over instead of this busy-polling session lists on its own
+    forever."""
     try:
         import per_app_audio
     except Exception as e:
@@ -244,7 +304,10 @@ def _capture_loop_process(stop_event):
         config["capture_mode"] = "system"
         return
 
-    target_name = config["capture_target_name"]
+    targets = list(config.get("capture_target_names") or [])
+    if not targets:
+        return
+
     try:
         sessions = per_app_audio.list_audio_sessions()
     except Exception as e:
@@ -254,25 +317,86 @@ def _capture_loop_process(stop_event):
         # found yet" does
         print(f"[audio] couldn't list audio sessions: {e}")
         return
-    pid = next((s["pid"] for s in sessions if s["name"].lower() == target_name.lower()), None)
-    if pid is None:
-        return  # not running (yet) -- capture_loop will retry shortly
+    live_pids = {s["name"].lower(): s["pid"] for s in sessions}
 
-    configured = {"done": False}
+    config["sample_rate"] = _APP_CAPTURE_RATE
+    config["channels"] = _APP_CAPTURE_CHANNELS
 
-    def on_chunk(pcm, rate, channels, width):
-        if not configured["done"]:
-            config["sample_rate"] = rate
-            config["channels"] = channels
-            configured["done"] = True
-        broadcaster.publish(pcm)
+    def run_source(src, pid):
+        try:
+            per_app_audio.capture_loop(pid, src.stop_event, src.on_chunk)
+        except Exception as e:
+            print(f"[audio] per-app capture of '{src.name}' failed: {e}")
 
-    print(f"[audio] capturing '{target_name}' (pid {pid}) only -- "
-          f"everything else on this PC stays out of the Sonos stream")
+    def _try_start(name, sources):
+        key = name.lower()
+        if key in sources:
+            return
+        pid = live_pids.get(key)
+        if pid is None:
+            return
+        src = _AppSource(name)
+        src.thread = threading.Thread(target=run_source, args=(src, pid), daemon=True)
+        sources[key] = src
+        src.thread.start()
+        print(f"[audio] '{name}' (pid {pid}) joined the mix")
+
+    sources = {}  # lowercased exe name -> _AppSource
+    for name in targets:
+        _try_start(name, sources)
+    if not sources:
+        return  # none of the selected apps are running (yet) -- caller retries shortly
+
+    frame_bytes = _APP_CAPTURE_CHANNELS * _APP_CAPTURE_WIDTH
+    chunk_bytes = CHUNK * frame_bytes
+    chunk_seconds = CHUNK / _APP_CAPTURE_RATE
+
+    print(f"[audio] mixing {len(sources)}/{len(targets)} selected app(s) into the Sonos "
+          f"stream -- everything else on this PC stays out of it")
     try:
-        per_app_audio.capture_loop(pid, stop_event, on_chunk)
-    except Exception as e:
-        print(f"[audio] per-app capture of '{target_name}' failed: {e}")
+        next_tick = time.monotonic()
+        next_rescan = next_tick + _APP_RESCAN_INTERVAL_S
+        while not stop_event.is_set():
+            now = time.monotonic()
+            if now >= next_rescan:
+                next_rescan = now + _APP_RESCAN_INTERVAL_S
+                try:
+                    live_pids = {s["name"].lower(): s["pid"]
+                                 for s in per_app_audio.list_audio_sessions()}
+                except Exception as e:
+                    print(f"[audio] couldn't list audio sessions: {e}")
+                    live_pids = {}
+                for name in targets:
+                    _try_start(name, sources)
+                for key in list(sources):
+                    src = sources[key]
+                    if not src.thread.is_alive():
+                        del sources[key]
+                        print(f"[audio] '{src.name}' dropped out of the mix")
+                if not sources:
+                    return  # every source that was in the mix is gone -- caller retries
+
+            mixed = np.zeros(CHUNK * _APP_CAPTURE_CHANNELS, dtype=np.int32)
+            for src in sources.values():
+                mixed += np.frombuffer(src.take(chunk_bytes), dtype=np.int16).astype(np.int32)
+            # Summing multiple full-scale sources can exceed int16 range --
+            # soft-limit (see _soft_limit) rather than hard-clip, the same
+            # treatment already used for the local gain/EQ path.
+            normalized = mixed.astype(np.float32) / 32768.0
+            broadcaster.publish((_soft_limit(normalized) * 32767.0).astype(np.int16).tobytes())
+
+            next_tick += chunk_seconds
+            delay = next_tick - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                next_tick = time.monotonic()  # fell behind -- resync instead of free-running
+    finally:
+        for src in sources.values():
+            src.stop_event.set()
+        for src in sources.values():
+            if src.thread:
+                src.thread.join(timeout=2)
 
 
 def _capture_loop_system(stop_event):
@@ -704,10 +828,10 @@ def start_audio_engine(stop_event):
         _render_thread.start()
 
 
-def restart_capture(new_mode=None, new_target_name=None):
+def restart_capture(new_mode=None, new_target_names=None):
     """Stop the current capture thread and start a new one, picking up a
-    newly-chosen audio source (whole system vs. one application). Used by
-    the dashboard's audio-source picker.
+    newly-chosen audio source (whole system vs. one or more selected
+    apps). Used by the dashboard's audio-source picker.
 
     Whole-system and per-app capture run at different, hardcoded sample
     rates (see per_app_audio.py) -- so switching between them changes the
@@ -722,9 +846,9 @@ def restart_capture(new_mode=None, new_target_name=None):
     from config import save_config
     if new_mode is not None:
         config["capture_mode"] = new_mode
-    if new_target_name is not None:
-        config["capture_target_name"] = new_target_name
-    if new_mode is not None or new_target_name is not None:
+    if new_target_names is not None:
+        config["capture_target_names"] = new_target_names
+    if new_mode is not None or new_target_names is not None:
         save_config(config)
     with _capture_lock:
         if _capture_stop_event is not None:

@@ -342,11 +342,13 @@ DASHBOARD_HTML = """
         <button onclick="loadAudioSessions()" style="background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;">Refresh</button>
       </div>
       <div style="font-size:11px; color:#777; margin:2px 0 8px;">
-        An app only shows up here once it's made some sound since PC2Sonos started (or since the last Refresh). Windows can't always capture a specific app this way &mdash; copy-protected playback and some elevated apps aren't capturable regardless.
+        An app only shows up here once it's made some sound since PC2Sonos started (or since the last Refresh). Windows can't always capture a specific app this way &mdash; copy-protected playback and some elevated apps aren't capturable regardless. Check one or more apps to mix just those into the Sonos stream, or leave none checked to send everything.
       </div>
-      <select id="captureSource" onchange="setCaptureSource()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
-        <option value="">Whole system (default)</option>
-      </select>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400; font-size:13px; padding:4px 0;">
+        <input type="checkbox" id="captureWholeSystem" onchange="onWholeSystemToggle()">
+        Whole system (default)
+      </label>
+      <div id="captureAppList" style="display:flex; flex-direction:column; gap:2px; max-height:180px; overflow-y:auto; margin-top:4px; padding:6px; background:#111; border:1px solid #333; border-radius:6px;"></div>
       <div id="captureSourceResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
     </div>
   </div>
@@ -605,30 +607,48 @@ async function setDevice(){
 async function loadAudioSessions(){
   const res = await fetch('/api/audio_sessions');
   const data = await res.json();
-  const sel = document.getElementById('captureSource');
-  sel.innerHTML = '';
-  const wholeSystem = document.createElement('option');
-  wholeSystem.value = '';
-  wholeSystem.textContent = 'Whole system (default)';
-  sel.appendChild(wholeSystem);
+  const selected = new Set(data.mode === 'apps' ? data.targets : []);
+  const list = document.getElementById('captureAppList');
+  list.innerHTML = '';
   data.sessions.forEach(s => {
-    const opt = document.createElement('option');
-    opt.value = s.name;
-    opt.textContent = s.name;
-    sel.appendChild(opt);
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex; align-items:center; gap:8px; font-weight:400; font-size:13px; padding:2px 0;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = s.name;
+    cb.checked = selected.has(s.name);
+    cb.onchange = setCaptureSource;
+    row.appendChild(cb);
+    row.appendChild(document.createTextNode(s.name));
+    list.appendChild(row);
   });
-  sel.value = (data.mode === 'process') ? data.target : '';
+  const wholeCb = document.getElementById('captureWholeSystem');
+  wholeCb.checked = selected.size === 0;
+  list.style.display = wholeCb.checked ? 'none' : 'flex';
+}
+function onWholeSystemToggle(){
+  const wholeCb = document.getElementById('captureWholeSystem');
+  const list = document.getElementById('captureAppList');
+  if (wholeCb.checked) {
+    list.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
+  }
+  list.style.display = wholeCb.checked ? 'none' : 'flex';
+  setCaptureSource();
 }
 async function setCaptureSource(){
-  const sel = document.getElementById('captureSource');
   const el = document.getElementById('captureSourceResult');
-  const target = sel.value;
+  const wholeCb = document.getElementById('captureWholeSystem');
+  const list = document.getElementById('captureAppList');
+  const checked = Array.from(list.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.value);
+  if (checked.length > 0) wholeCb.checked = false;  // picking an app implicitly turns off "whole system"
+  const targets = wholeCb.checked ? [] : checked;
+  list.style.display = wholeCb.checked ? 'none' : 'flex';
   el.textContent = 'Switching...';
   const res = await fetch('/api/capture_source', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({mode: target ? 'process' : 'system', target})});
+    body: JSON.stringify({mode: targets.length ? 'apps' : 'system', targets})});
   const data = await res.json();
   el.textContent = data.ok
-    ? (target ? ('Now capturing only ' + target + '.') : 'Now capturing the whole system again.')
+    ? (targets.length ? ('Now mixing ' + targets.join(', ') + ' into the Sonos stream.') : 'Now capturing the whole system again.')
     : ('Failed: ' + data.error);
 }
 function exportDiag(){
@@ -924,7 +944,7 @@ def api_audio_sessions():
     return jsonify({
         "sessions": sessions,
         "mode": config.get("capture_mode", "system"),
-        "target": config.get("capture_target_name", ""),
+        "targets": config.get("capture_target_names", []),
     })
 
 
@@ -932,12 +952,15 @@ def api_audio_sessions():
 def api_set_capture_source():
     data = request.get_json(force=True)
     mode = data.get("mode")
-    if mode not in ("system", "process"):
-        return jsonify({"ok": False, "error": "mode must be 'system' or 'process'"}), 400
-    target = str(data.get("target", "")).strip()
-    if mode == "process" and not target:
-        return jsonify({"ok": False, "error": "pick an application first"}), 400
-    restart_capture(new_mode=mode, new_target_name=target)
+    if mode not in ("system", "apps"):
+        return jsonify({"ok": False, "error": "mode must be 'system' or 'apps'"}), 400
+    targets = data.get("targets", [])
+    if not isinstance(targets, list):
+        return jsonify({"ok": False, "error": "targets must be a list"}), 400
+    targets = [str(t).strip() for t in targets if str(t).strip()]
+    if mode == "apps" and not targets:
+        return jsonify({"ok": False, "error": "pick at least one application first"}), 400
+    restart_capture(new_mode=mode, new_target_names=targets)
     return jsonify({"ok": True})
 
 

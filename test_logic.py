@@ -297,25 +297,25 @@ print("  OK (a +24dB boost on loud audio soft-limits, doesn't hard-clip)")
 
 r = client.get("/api/audio_sessions")
 body = r.get_json()
-assert r.status_code == 200 and "sessions" in body and body["mode"] == "system"
+assert r.status_code == 200 and "sessions" in body and body["mode"] == "system" and body["targets"] == []
 print("  /api/audio_sessions OK")
 
 r = client.post("/api/capture_source", json={"mode": "bogus"})
 assert r.status_code == 400
-r = client.post("/api/capture_source", json={"mode": "process", "target": ""})
-assert r.status_code == 400, "process mode with no target should be rejected"
+r = client.post("/api/capture_source", json={"mode": "apps", "targets": []})
+assert r.status_code == 400, "apps mode with no targets should be rejected"
 print("  /api/capture_source OK (rejects invalid input)")
 
 print("[test] per-app audio dispatcher: three failure modes, three different responses...")
 import audio_engine  # noqa: E402  (already imported above; re-import is a no-op)
 import types as _types
 _orig_mode = webapp.config.get("capture_mode")
-_orig_target = webapp.config.get("capture_target_name")
+_orig_targets = webapp.config.get("capture_target_names")
 
 
-def _with_fake_per_app_audio(fake_module_or_none, target_name, body):
-    webapp.config["capture_mode"] = "process"
-    webapp.config["capture_target_name"] = target_name
+def _with_fake_per_app_audio(fake_module_or_none, target_names, body):
+    webapp.config["capture_mode"] = "apps"
+    webapp.config["capture_target_names"] = target_names
     if fake_module_or_none is None:
         sys.modules["per_app_audio"] = None  # the documented way to make `import x` raise ImportError
     else:
@@ -325,7 +325,7 @@ def _with_fake_per_app_audio(fake_module_or_none, target_name, body):
     finally:
         sys.modules.pop("per_app_audio", None)
         webapp.config["capture_mode"] = _orig_mode
-        webapp.config["capture_target_name"] = _orig_target
+        webapp.config["capture_target_names"] = _orig_targets
 
 
 try:
@@ -333,35 +333,59 @@ try:
     # Windows box, or an old Windows without process-loopback support):
     # this is permanent for the rest of the run, so fall back for good.
     def _check_a():
-        audio_engine._capture_loop_process(threading.Event())  # must not raise
+        audio_engine._capture_loop_apps(threading.Event())  # must not raise
         assert webapp.config["capture_mode"] == "system", \
             "an unimportable per-app backend should fall back to whole-system capture"
-    _with_fake_per_app_audio(None, "spotify.exe", _check_a)
+    _with_fake_per_app_audio(None, ["spotify.exe"], _check_a)
     print("  OK (unimportable backend falls back to system mode)")
 
     # (b) imports fine, but listing sessions blew up right now (e.g. a
     # transient COM error): don't punish that with a permanent fallback.
     def _check_b():
-        audio_engine._capture_loop_process(threading.Event())  # must not raise
-        assert webapp.config["capture_mode"] == "process", \
+        audio_engine._capture_loop_apps(threading.Event())  # must not raise
+        assert webapp.config["capture_mode"] == "apps", \
             "a transient listing failure must NOT force a fallback to system mode"
     broken = _types.ModuleType("per_app_audio")
     broken.list_audio_sessions = lambda: (_ for _ in ()).throw(OSError("simulated COM hiccup"))
-    _with_fake_per_app_audio(broken, "spotify.exe", _check_b)
+    _with_fake_per_app_audio(broken, ["spotify.exe"], _check_b)
     print("  OK (a transient listing error is a clean no-op, not a fallback)")
 
-    # (c) backend works fine, target just isn't running yet.
+    # (c) backend works fine, none of the selected apps are running yet.
     def _check_c():
-        audio_engine._capture_loop_process(threading.Event())  # not found -- clean no-op
-        assert webapp.config["capture_mode"] == "process", \
-            "target simply not running (yet) must NOT force a fallback to system mode"
+        audio_engine._capture_loop_apps(threading.Event())  # not found -- clean no-op
+        assert webapp.config["capture_mode"] == "apps", \
+            "selected apps simply not running (yet) must NOT force a fallback to system mode"
     fake = _types.ModuleType("per_app_audio")
     fake.list_audio_sessions = lambda: [{"pid": 123, "name": "chrome.exe"}]
-    _with_fake_per_app_audio(fake, "definitely_not_a_running_app.exe", _check_c)
-    print("  OK (target not currently running is a clean no-op, not a fallback)")
+    _with_fake_per_app_audio(fake, ["definitely_not_a_running_app.exe"], _check_c)
+    print("  OK (no selected app currently running is a clean no-op, not a fallback)")
+
+    # (d) two selected apps both running: each should get mixed in, and
+    # a source that stops producing frames should drop out of the mix
+    # without affecting the other.
+    def _check_d():
+        stop = threading.Event()
+        t = threading.Thread(target=audio_engine._capture_loop_apps, args=(stop,), daemon=True)
+        t.start()
+        time.sleep(0.3)
+        stop.set()
+        t.join(timeout=3)
+        assert not t.is_alive(), "mixer thread should stop promptly when told to"
+    per_app_audio_fake = _types.ModuleType("per_app_audio")
+    per_app_audio_fake.list_audio_sessions = lambda: [
+        {"pid": 111, "name": "spotify.exe"}, {"pid": 222, "name": "chrome.exe"}]
+
+    def _fake_capture_loop(pid, stop_event, on_chunk, include_tree=True):
+        pcm = (_np.ones(1024 * 2, dtype=_np.int16) * 1000).tobytes()
+        while not stop_event.is_set():
+            on_chunk(pcm, 48000, 2, 2)
+            time.sleep(0.01)
+    per_app_audio_fake.capture_loop = _fake_capture_loop
+    _with_fake_per_app_audio(per_app_audio_fake, ["spotify.exe", "chrome.exe"], _check_d)
+    print("  OK (multiple selected apps mix and stop cleanly)")
 finally:
     webapp.config["capture_mode"] = _orig_mode
-    webapp.config["capture_target_name"] = _orig_target
+    webapp.config["capture_target_names"] = _orig_targets
 
 wav = webapp.wav_header(44100, 2, 2)
 assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE" and b"fmt " in wav and b"data" in wav
