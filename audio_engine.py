@@ -73,9 +73,28 @@ broadcaster = Broadcaster()
 
 
 def find_device_index(substr, want_input):
+    """Look up a device by (substring of) name, as picked from the
+    dashboard's dropdown.
+
+    Windows exposes the same physical device once per host API it
+    supports (MME, DirectSound, WASAPI, WDM-KS) -- PyAudio enumerates
+    all of them under the same name. For output, the dropdown only ever
+    shows WASAPI devices (see list_output_devices), so the lookup here
+    must stay within WASAPI too, or a name match can silently resolve to
+    a different host API's copy of the device (e.g. the legacy MME
+    entry, which on some driver stacks opens and writes without error
+    but produces no audible output)."""
     substr_l = substr.lower()
+    wasapi_info = None
+    if not want_input:
+        try:
+            wasapi_info = _pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+        except Exception:
+            wasapi_info = None
     for i in range(_pa.get_device_count()):
         info = _pa.get_device_info_by_index(i)
+        if wasapi_info and info.get("hostApi") != wasapi_info["index"]:
+            continue
         name = info.get("name", "")
         if substr_l in name.lower():
             if want_input and info.get("maxInputChannels", 0) > 0:
@@ -593,8 +612,13 @@ def _render_session(stop_event):
     stream = _pa.open(format=pyaudio.paInt16, channels=render_channels, rate=render_rate,
                        output=True, output_device_index=idx, frames_per_buffer=CHUNK)
     current_render_device_name = info["name"]
+    try:
+        host_api_name = _pa.get_host_api_info_by_index(info["hostApi"])["name"]
+    except Exception:
+        host_api_name = "unknown"
     print(f"[audio] rendering (delayed) to: {info['name']} "
-          f"@ {render_rate}Hz x{render_channels}ch (capture is {capture_rate}Hz x{capture_channels}ch)")
+          f"@ {render_rate}Hz x{render_channels}ch (capture is {capture_rate}Hz x{capture_channels}ch) "
+          f"[hostApi={host_api_name}]")
 
     needs_resample = (render_rate != capture_rate)
     needs_downmix = (render_channels == 1 and capture_channels == 2)
