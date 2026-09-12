@@ -4,6 +4,29 @@ import threading
 import time
 from xml.sax.saxutils import escape
 
+import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Patch requests.post so modern Sonos S2 firmware requiring HTTPS (port 1443)
+# falls back from 403 Forbidden on HTTP (port 1400) to HTTPS cleanly.
+_orig_requests_post = requests.post
+
+def _https_sonos_post(url, *args, **kwargs):
+    if isinstance(url, str) and ":1400/" in url and "/Control" in url:
+        https_url = url.replace("http://", "https://").replace(":1400/", ":1443/")
+        kwargs_ssl = dict(kwargs)
+        kwargs_ssl["verify"] = False
+        try:
+            r = _orig_requests_post(https_url, *args, **kwargs_ssl)
+            if r.status_code == 200:
+                return r
+        except Exception:
+            pass
+    return _orig_requests_post(url, *args, **kwargs)
+
+requests.post = _https_sonos_post
+
 import soco.config as soco_config
 from soco import SoCo
 from soco.discovery import discover, scan_network
