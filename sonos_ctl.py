@@ -486,6 +486,13 @@ class SpeakerManager:
         except Exception as e:
             print(f"[sonos] failed to start stream on {zone.player_name}: {e}")
 
+    def stop_all(self):
+        """Stop our stream on every speaker it's playing on (quit path)."""
+        with self._lock:
+            items = [(uid, zone) for uid, zone in self.speakers.items() if self.streams.get(uid)]
+        for uid, zone in items:
+            self.stop_stream(uid, zone)
+
     def reconnect_all_streaming(self, base_url):
         """Force every currently-streaming speaker to reconnect and pull a
         fresh WAV header. Needed whenever the actual PCM format changes

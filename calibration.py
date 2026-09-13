@@ -24,7 +24,7 @@ import threading
 import time
 
 import numpy as np
-import pyaudiowpatch as pyaudio
+import audio_backend as pyaudio  # pyaudiowpatch on Windows, sounddevice on macOS
 
 from audio_engine import broadcaster, get_pyaudio
 from config import config, save_config

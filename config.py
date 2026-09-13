@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 
@@ -17,7 +18,12 @@ from pathlib import Path
 # Files by default) -- this is just the small, frequently-rewritten data
 # file, kept separate because Program Files itself can't be written to
 # without elevation.
-APP_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "PC2Sonos"
+# On macOS the equivalent per-user, never-cloud-synced location is
+# ~/Library/Application Support (Desktop/Documents can be iCloud-synced).
+if sys.platform == "darwin":
+    APP_DIR = Path.home() / "Library" / "Application Support" / "PC2Sonos"
+else:
+    APP_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "PC2Sonos"
 CONFIG_PATH = APP_DIR / "config.json"
 
 # Optional dashboard password. Kept in its own file, NOT in config.json,
@@ -80,12 +86,15 @@ def _migrate_from_old_locations():
 
 
 APP_DIR.mkdir(parents=True, exist_ok=True)
-_migrate_from_old_locations()
+if sys.platform == "win32":
+    _migrate_from_old_locations()
 
 DEFAULT_CONFIG = {
-    # Substring match against Windows device names. VB-Audio Virtual
-    # Cable's recording endpoint is normally named "CABLE Output".
-    "capture_device_substr": "CABLE Output",
+    # Substring match against device names. VB-Audio Virtual Cable's
+    # recording endpoint is normally named "CABLE Output" on Windows; on
+    # macOS the equivalent virtual device is "BlackHole 2ch", which is
+    # both an output (apps play into it) and the input we capture from.
+    "capture_device_substr": "BlackHole" if sys.platform == "darwin" else "CABLE Output",
     # Blank = auto-pick the first real (non-virtual) WASAPI output device.
     "render_device_substr": "",
     # "system" (default): capture whatever's playing through the virtual
@@ -161,6 +170,11 @@ DEFAULT_CONFIG = {
     # false, the dashboard opens in the browser automatically; after
     # that, use the tray icon (a startup toast still says it's running).
     "has_launched_before": False,
+    # macOS only: switch the default output to BlackHole at launch (the
+    # Windows build does the equivalent via windows_audio.py) and remember
+    # what it was so quitting can put it back.
+    "manage_default_output": True,
+    "previous_default_output": "",
     # Donation nag state -- see webapp.py's /api/donate/* routes. Once
     # donated is True, the weekly popup stops forever; last_donate_prompt_at
     # (unix seconds, 0 = never) just throttles it to once a week otherwise.
