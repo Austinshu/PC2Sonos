@@ -646,8 +646,11 @@ if sys.platform == "win32":
     assert _h2 is None, "second acquire (same name) must be refused"
     import ctypes as _ct
     _ct.WinDLL("kernel32").CloseHandle(_h1)  # release so nothing wedges
+elif sys.platform == "darwin":
+    assert _h2 is None, "second acquire (same name) must be refused (flock)"
+    _h1.close()  # releases the flock so nothing wedges
 else:
-    assert _h2 is not None, "non-Windows: lock is a no-op, always granted"
+    assert _h2 is not None, "Linux: lock is a no-op, always granted"
 print("  OK")
 
 print("[test] update checker: version compare, and the route never touches the network...")

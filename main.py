@@ -77,11 +77,16 @@ def _acquire_flock(name):
     try:
         import fcntl
         from config import APP_DIR
-        _lock_file = open(APP_DIR / f"{name}.lock", "w")
-        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _lock_file.write(str(os.getpid()))
-        _lock_file.flush()
-        return _lock_file
+        f = open(APP_DIR / f"{name}.lock", "w")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            return None
+        f.write(str(os.getpid()))
+        f.flush()
+        _lock_file = f  # only a held lock is kept referenced
+        return f
     except OSError:
         return None
     except Exception:
