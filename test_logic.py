@@ -683,6 +683,9 @@ assert isinstance(snap, str) and "OS:" in snap and "LAN IP:" in snap
 if sys.platform == "win32":
     assert "not Windows" not in snap, \
         "on Windows, every lookup should return real data, never the non-Windows placeholder"
+elif sys.platform == "darwin":
+    # macOS has its own real lookups in place of the Windows-only ones
+    assert "BlackHole" in snap and "Microphone" in snap, snap
 else:
     assert "not Windows" in snap  # confirms the win32-only branches are hit and handled
 print("  system_snapshot() OK")
