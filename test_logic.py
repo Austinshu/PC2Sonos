@@ -474,7 +474,10 @@ assert mgr.streams[uid_b] is False
 za._state = "STOPPED"  # drops again immediately
 mgr.watchdog_tick(base)
 assert za.play_count == 1, "cooldown should prevent an immediate second restart"
-mgr._last_auto_restart[uid_a] = 0  # simulate cooldown elapsed
+# simulate cooldown elapsed. Not a plain 0: the check is
+# time.monotonic() - last >= 45, and monotonic() counts from boot, so on a
+# freshly booted CI VM (uptime < 45s) 0 would look like "just restarted".
+mgr._last_auto_restart[uid_a] = time.monotonic() - 3600
 mgr.watchdog_tick(base)
 assert za.play_count == 2, "watchdog should restart again after the cooldown"
 
