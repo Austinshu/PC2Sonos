@@ -22,3 +22,9 @@ dashboard_password.txt
 venv/
 .venv/
 env/
+
+# macOS app bundle build output (build_macos_app.sh) and lock file
+dist/
+*.dmg
+*.spec
+.DS_Store

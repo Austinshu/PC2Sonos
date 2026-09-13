@@ -108,6 +108,34 @@ def _firewall_rules_present():
         return f"couldn't check ({type(e).__name__}: {e})"
 
 
+def _macos_lines(config_capture_substr):
+    """The macOS counterparts of the Windows-only checks above: is
+    BlackHole present, what is the default output, has macOS granted
+    audio-input permission, and is the application firewall in play."""
+    lines = []
+    try:
+        from macos_audio import current_default_output, list_output_devices
+        names = [n for _, n in list_output_devices()]
+        present = any(config_capture_substr.lower() in n.lower() for n in names)
+        lines.append(f"BlackHole device: {'present' if present else 'MISSING'}")
+        _, default = current_default_output()
+        lines.append(f"macOS default output device: {default or 'unknown'}")
+    except Exception as e:
+        lines.append(f"BlackHole / default output: couldn't check ({type(e).__name__}: {e})")
+    try:
+        from macos_app import microphone_status
+        lines.append(f"macOS audio-input (Microphone) permission: {microphone_status()}")
+    except Exception as e:
+        lines.append(f"macOS audio-input (Microphone) permission: couldn't check ({e})")
+    try:
+        from macos_firewall import app_allowed, firewall_state
+        lines.append(f"macOS application firewall: {firewall_state()} "
+                     f"(this executable: {app_allowed(os.path.realpath(sys.executable))})")
+    except Exception as e:
+        lines.append(f"macOS application firewall: couldn't check ({e})")
+    return lines
+
+
 def _cable_and_default_output():
     if sys.platform != "win32":
         return "n/a (not Windows)", "n/a (not Windows)"
@@ -132,16 +160,18 @@ def system_snapshot():
 
     lines = []
     lines.append(f"generated: {datetime.now().isoformat(timespec='seconds')}")
-    lines.append(f"PC2Sonos running as frozen .exe: {getattr(sys, 'frozen', False)}")
+    lines.append(f"PC2Sonos running as frozen app: {getattr(sys, 'frozen', False)}")
     lines.append(f"OS: {platform.platform()}")
     lines.append(f"Python: {sys.version.split()[0]}")
     lines.append(f"LAN IP: {get_lan_ip()}")
-    lines.append(f"Windows network profile: {_network_profile()}")
-    lines.append(f"Firewall rules: {_firewall_rules_present()}")
-
-    cable, default_out = _cable_and_default_output()
-    lines.append(f"VB-CABLE driver: {cable}")
-    lines.append(f"Windows default playback device: {default_out}")
+    if sys.platform == "darwin":
+        lines.extend(_macos_lines(config.get("capture_device_substr", "BlackHole")))
+    else:
+        lines.append(f"Windows network profile: {_network_profile()}")
+        lines.append(f"Firewall rules: {_firewall_rules_present()}")
+        cable, default_out = _cable_and_default_output()
+        lines.append(f"VB-CABLE driver: {cable}")
+        lines.append(f"Windows default playback device: {default_out}")
     lines.append(f"PC-speaker (delayed) render device in use: "
                  f"{get_current_render_device_name() or 'none picked yet'}")
 

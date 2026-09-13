@@ -14,6 +14,11 @@ own Sonos speakers on your own LAN.
 Requires (see requirements.txt): soco, pyaudiowpatch, flask, pystray, pillow
 Requires VB-Audio Virtual Cable (free, https://vb-audio.com/Cable/) set as
 your Windows default playback device -- see README.md.
+
+macOS: the same design with BlackHole (https://existential.audio/blackhole/)
+as the virtual device, sounddevice/CoreAudio instead of WASAPI
+(audio_backend.py), and macos_audio.py / macos_app.py in place of the
+windows_* helpers. See README.md, "macOS".
 """
 
 import os
@@ -40,6 +45,8 @@ def acquire_single_instance_lock(name="PC2Sonos"):
     Returns an opaque handle to keep alive for the process lifetime, or
     None if another instance already holds the lock. Never raises -- if
     the OS call fails we return the handle and let the app start."""
+    if sys.platform == "darwin":
+        return _acquire_flock(name)
     if sys.platform != "win32":
         return _NOOP_LOCK
     try:
@@ -56,6 +63,27 @@ def acquire_single_instance_lock(name="PC2Sonos"):
             kernel32.CloseHandle(handle)
             return None
         return handle
+    except Exception:
+        return _NOOP_LOCK
+
+
+_lock_file = None  # kept referenced for the process lifetime (flock is released on close)
+
+
+def _acquire_flock(name):
+    """The non-Windows single-instance lock: flock on a file in the data
+    dir. Returns a handle, or None if another instance holds it."""
+    global _lock_file
+    try:
+        import fcntl
+        from config import APP_DIR
+        _lock_file = open(APP_DIR / f"{name}.lock", "w")
+        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_file.write(str(os.getpid()))
+        _lock_file.flush()
+        return _lock_file
+    except OSError:
+        return None
     except Exception:
         return _NOOP_LOCK
 
@@ -83,7 +111,10 @@ def _setup_logging():
     status messages -- and so there's somewhere to look if something else
     goes wrong."""
     if sys.stdout is None or getattr(sys, "frozen", False):
-        log_dir = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "PC2Sonos"
+        if sys.platform == "darwin":
+            log_dir = Path.home() / "Library" / "Application Support" / "PC2Sonos"
+        else:
+            log_dir = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "PC2Sonos"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "pc2sonos.log"
         try:
@@ -97,6 +128,13 @@ def _setup_logging():
         sys.stderr = log_file
         print(f"\n--- PC2Sonos starting: {log_dir} ---")
 
+
+if "--version" in sys.argv[1:]:
+    # build_macos_app.sh smoke-tests the frozen bundle with this; it must
+    # run before stdout is redirected to the log file
+    from version import VERSION as _V
+    print(f"PC2Sonos {_V}")
+    sys.exit(0)
 
 _setup_logging()
 
@@ -144,6 +182,100 @@ def sonos_discovery_loop(stop_event, on_demand=False, ready_event=None):
         stop_event.wait(15)
 
 
+def _macos_startup(stop_event):
+    """The macOS equivalents of the Windows self-configuration above:
+    make BlackHole the default output (remembering the previous one so
+    quitting can restore it), and ask for the audio-input permission
+    that reading from BlackHole needs. Without that permission CoreAudio
+    delivers silence and never says why -- and the CoreAudio input
+    stream alone does not reliably trigger the prompt, so ask via
+    AVFoundation explicitly. Also restore the output on SIGTERM."""
+    from config import save_config
+    try:
+        from macos_audio import ensure_blackhole_is_default
+        changed, status, previous = ensure_blackhole_is_default(config["capture_device_substr"])
+        print(f"[audio] {status}")
+        if changed and previous:
+            config["previous_default_output"] = previous
+            save_config(config)
+    except Exception as e:
+        print(f"[audio] default-output helper unavailable: {e}")
+
+    try:
+        from macos_app import ask, microphone_status, open_microphone_settings, request_microphone_access
+
+        def denied_dialog():
+            if ask("macOS is not allowing PC2Sonos to capture audio, so Sonos and your Mac's "
+                   "speakers will only get silence.\n\nIn System Settings > Privacy & Security > "
+                   "Microphone, turn on PC2Sonos, then quit and reopen PC2Sonos.",
+                   ["Later", "Open Microphone Settings"], default="Open Microphone Settings") \
+                    == "Open Microphone Settings":
+                open_microphone_settings()
+
+        def on_result(granted):
+            if granted:
+                from audio_engine import restart_capture
+                restart_capture()  # a stream opened before the grant keeps delivering silence
+            else:
+                denied_dialog()
+
+        status = microphone_status()
+        print(f"[audio] audio-input (microphone) permission: {status}")
+        if status == "not determined":
+            request_microphone_access(on_result)
+        elif status in ("denied", "restricted"):
+            threading.Thread(target=denied_dialog, daemon=True).start()
+    except Exception as e:
+        print(f"[audio] microphone permission helper unavailable: {e}")
+
+    def on_term(signum, frame):
+        print(f"[startup] signal {signum}; shutting down")
+        _macos_shutdown(stop_event)
+        os._exit(0)
+
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, on_term)
+        except Exception:
+            pass
+
+
+def _macos_shutdown(stop_event):
+    """Stop the streams and hand the Mac's default output back, so
+    quitting never leaves the Mac silently playing into BlackHole."""
+    stop_event.set()
+    try:
+        speaker_mgr.stop_all()
+    except Exception as e:
+        print(f"[sonos] stop on quit failed: {e}")
+    if config.get("manage_default_output", True):
+        try:
+            from macos_audio import restore_default_output
+            print(f"[audio] {restore_default_output(config.get('previous_default_output', ''))}")
+        except Exception as e:
+            print(f"[audio] couldn't restore default output: {e}")
+
+
+def _macos_first_run():
+    """From the .app there is no install.sh: offer to install BlackHole
+    if it's missing and to start at login, once, on the first launch."""
+    try:
+        from macos_app import is_bundled, offer_blackhole_install, set_login_item, ask
+        from audio_engine import find_device_index
+        if not is_bundled():
+            return
+        idx, _ = find_device_index(config["capture_device_substr"], want_input=True)
+        if idx is None:
+            print(f"[blackhole] not installed; user chose: {offer_blackhole_install()}")
+        if ask("Start PC2Sonos automatically when you log in? You can change this later "
+               "from the menu bar icon.", ["Not now", "Start at Login"],
+               default="Start at Login") == "Start at Login":
+            print(f"[login] {set_login_item(True)}")
+    except Exception as e:
+        print(f"[startup] first-run setup failed: {e}")
+
+
 def main():
     # Bail out early if another copy is already running -- before we touch
     # the HTTP port, the capture device, or any speaker. Held for the
@@ -151,6 +283,13 @@ def main():
     _instance_lock = acquire_single_instance_lock()
     if _instance_lock is None:
         print("[startup] another PC2Sonos instance is already running -- exiting")
+        if sys.platform == "darwin":
+            try:
+                from macos_app import ask
+                ask("PC2Sonos is already running: look for its icon in the menu bar and use "
+                    "Quit PC2Sonos there before opening a new copy.", ["OK"])
+            except Exception:
+                pass
         return
 
     # first thing after that -- so a crash in anything below this line
@@ -193,6 +332,8 @@ def main():
             print(f"[firewall] {ensure_firewall_rules(exe, port=config['http_port'])}")
         except Exception as e:
             print(f"[firewall] rule check unavailable: {e}")
+    elif sys.platform == "darwin":
+        _macos_startup(stop_event)
 
     start_audio_engine(stop_event)
 
@@ -251,11 +392,13 @@ def main():
 
     threading.Thread(target=stream_keeper, daemon=True).start()
 
-    try:
-        from tray_icon import run_tray
-        threading.Thread(target=run_tray, args=(config,), daemon=True).start()
-    except Exception as e:
-        print(f"[tray] system tray icon not available: {e}")
+    tray_on_main_thread = sys.platform == "darwin"  # AppKit insists
+    if not tray_on_main_thread:
+        try:
+            from tray_icon import run_tray
+            threading.Thread(target=run_tray, args=(config,), daemon=True).start()
+        except Exception as e:
+            print(f"[tray] system tray icon not available: {e}")
 
     def announce_startup():
         # webapp.run_web() below blocks until the process exits, so this
@@ -271,6 +414,8 @@ def main():
         if not _wait_for_http(config["http_port"], stop_event, timeout=30):
             return
         if first_run:
+            if sys.platform == "darwin":
+                _macos_first_run()
             try:
                 import webbrowser
                 webbrowser.open(f"http://127.0.0.1:{config['http_port']}")
@@ -294,6 +439,21 @@ def main():
     threading.Thread(target=announce_startup, daemon=True).start()
 
     print(f"[web] dashboard: http://127.0.0.1:{config['http_port']}")
+    if tray_on_main_thread:
+        # macOS: Flask on a background thread, the tray icon owns the main
+        # thread; quitting from the tray restores the default output first.
+        threading.Thread(target=webapp.run_web, daemon=True).start()
+        try:
+            from tray_icon import run_tray
+            run_tray(config, on_quit=lambda: _macos_shutdown(stop_event))
+        except Exception as e:
+            print(f"[tray] system tray icon not available ({e}); running without it")
+            try:
+                webapp.run_web() if not _wait_for_http(config["http_port"], stop_event, 5) \
+                    else threading.Event().wait()
+            finally:
+                _macos_shutdown(stop_event)
+        return
     webapp.run_web()
 
 

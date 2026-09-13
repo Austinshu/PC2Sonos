@@ -191,6 +191,58 @@ care about, and don't rely on this if the dashboard is somehow reachable
 from outside your home network. The file is deliberately kept out of the
 diagnostics export so it isn't shared by accident.
 
+## macOS
+
+PC2Sonos runs on macOS too, with the same dashboard and the same design:
+a virtual audio device stands in for VB-CABLE, the app captures from it,
+plays a delayed copy to the Mac's own speakers and streams to Sonos.
+
+- **Virtual device:** [BlackHole 2ch](https://existential.audio/blackhole/)
+  (free, open source) instead of VB-CABLE. PC2Sonos makes it the default
+  output while running (via the public CoreAudio HAL API, `macos_audio.py`)
+  and restores your previous output when you quit from the menu bar.
+- **Audio:** PortAudio/CoreAudio through `sounddevice`, behind the same
+  PyAudio-shaped interface the Windows build uses (`audio_backend.py`), so
+  `audio_engine.py` and `calibration.py` are shared unchanged.
+- **Permissions:** macOS treats reading from BlackHole as *microphone*
+  access. The app asks for it on launch (`macos_app.py`); without it
+  CoreAudio delivers silence with no error, so the dashboard shows a
+  banner if the permission is missing, with a button to the right
+  settings pane.
+- **Startup:** a LaunchAgent (from `install.sh`) or a Login Items entry
+  (from the .app's menu bar item) instead of a Startup-folder shortcut.
+- **Not available on macOS:** per-application capture. The "Audio source"
+  picker only offers "Whole system". macOS 14.2+ has Core Audio process
+  taps that could do this and would also remove the need for BlackHole
+  and the microphone permission; that is a possible future direction.
+
+### Install on macOS
+
+Either build/run from source:
+
+```bash
+git clone https://github.com/Austinshu/PC2Sonos.git && cd PC2Sonos
+./install.sh
+```
+
+`install.sh` installs BlackHole via Homebrew if needed, creates a
+virtualenv, adds a firewall rule if the application firewall is on, runs
+the app once in the foreground so macOS can show the Microphone prompt
+(launchd-started processes never get one), and installs the LaunchAgent.
+`./uninstall.sh` reverses it.
+
+Or use a prebuilt `PC2Sonos-macOS-<arch>.dmg` from a release (built by
+`build_macos_app.sh` / the `macOS` GitHub Actions workflow): drag
+PC2Sonos to Applications. The app is not notarized (that needs a paid
+Apple Developer account), so the first launch shows "Apple could not
+verify PC2Sonos is free of malware": click Done, then System Settings >
+Privacy & Security > **Open Anyway** (macOS 15+), or right-click > Open
+(macOS 14 and older). The first launch offers to install BlackHole and to
+start at login, then asks for Microphone access; click Allow.
+
+Data lives in `~/Library/Application Support/PC2Sonos/` (`config.json`,
+`pc2sonos.log`, the optional `dashboard_password.txt`).
+
 ## Running from source (for development)
 
 The steps above are what an end user needs -- nothing else. This section
@@ -234,6 +286,13 @@ find it useful. This project does not modify, resell, or claim any
 ownership over VB-CABLE; if PC2Sonos is useful to you, please consider
 donating to VB-Audio directly at the link above.
 
+On macOS, PC2Sonos uses **BlackHole** by Existential Audio Inc.
+(https://existential.audio/blackhole/, GPL-3.0) as the virtual audio
+device. It is a separate driver the app talks to through CoreAudio, not
+bundled with or linked into PC2Sonos. The macOS support (audio backend,
+CoreAudio integration, installer, app bundle) was contributed by
+**Michael Shapiro** ([Shap-Code](https://github.com/Shap-Code)).
+
 PC2Sonos's own audio-capture, streaming, and delay-calibration code (this
 repository) was written from scratch and does not use or derive from any
 third-party project's source code, such as the (GPL-licensed) "Stream What
@@ -244,6 +303,14 @@ is shared with tools like SWYH.
 ## Files
 
 - `main.py` -- entrypoint, wires everything together
+- `audio_backend.py` -- the per-platform audio device layer behind one
+  PyAudio-shaped interface (pyaudiowpatch on Windows, sounddevice on macOS)
+- `macos_audio.py` / `macos_firewall.py` / `macos_app.py` -- macOS
+  counterparts of the windows_* helpers: default output device, firewall
+  status, microphone permission, Login Items, native dialogs
+- `install.sh` / `uninstall.sh` / `build_macos_app.sh` -- macOS install and
+  .app build (see "macOS" above)
+- `test_macos.py` -- Linux-runnable tests for the macOS layer
 - `audio_engine.py` -- WASAPI capture from the virtual cable (or, in
   per-app mode, `per_app_audio.py`), delayed + volume-boosted render to
   your real speakers, fan-out to Sonos streams

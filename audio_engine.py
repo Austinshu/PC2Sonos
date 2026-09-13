@@ -19,11 +19,12 @@ tune local_delay_ms until they land together.
 import audioop
 import queue
 import socket
+import sys
 import threading
 import time
 
 import numpy as np
-import pyaudiowpatch as pyaudio
+import audio_backend as pyaudio  # pyaudiowpatch on Windows, sounddevice on macOS
 
 from config import config
 
@@ -112,6 +113,9 @@ def find_device_index(substr, want_input):
 _VIRTUAL_DEVICE_BLOCKLIST = [
     "cable", "vb-audio", "steam streaming", "voicemeeter", "virtual",
     "voicemod", "nvidia broadcast", "wave link", "loopback",
+    # macOS virtual/software outputs (BlackHole is our own capture device there)
+    "blackhole", "soundflower", "aggregate", "multi-output", "zoomaudio",
+    "microsoft teams audio", "existential audio", "background music",
 ]
 
 
@@ -414,14 +418,26 @@ def _capture_loop_system(stop_event):
     audio (to both Sonos and the local speakers) for the rest of the run
     with no recovery short of relaunching the whole app by hand."""
     attempt = 0
+    warned_missing = False
     while not stop_event.is_set():
         idx, info = find_device_index(config["capture_device_substr"], want_input=True)
         if idx is None:
-            print(f"[audio] capture device matching '{config['capture_device_substr']}' "
-                  f"not found -- install VB-Audio Virtual Cable and set it as your "
-                  f"Windows default playback device (see README.md)")
-            return
+            if sys.platform == "darwin":
+                hint = "install BlackHole (brew install --cask blackhole-2ch)"
+            else:
+                hint = ("install VB-Audio Virtual Cable and set it as your Windows "
+                        "default playback device")
+            if not warned_missing:
+                warned_missing = True
+                print(f"[audio] capture device matching '{config['capture_device_substr']}' "
+                      f"not found -- {hint} (see README.md)")
+            # Keep checking rather than giving up for the whole run: on
+            # macOS the first launch offers to install BlackHole and audio
+            # should start as soon as the driver appears, no restart needed.
+            stop_event.wait(5)
+            continue
 
+        warned_missing = False
         rate = int(info.get("defaultSampleRate", config["sample_rate"]))
         channels = min(int(info.get("maxInputChannels", 2)), 2)
         config["sample_rate"] = rate

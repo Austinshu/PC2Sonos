@@ -6,6 +6,8 @@ browser). The result is cached in memory for the rest of the run; webapp.py's
 /api/update_status route only ever reads that cache, so reloading the
 dashboard never triggers another GitHub request."""
 
+import platform
+import sys
 import threading
 
 import requests
@@ -13,7 +15,12 @@ import requests
 from version import VERSION
 
 _GITHUB_API_URL = "https://api.github.com/repos/Austinshu/PC2Sonos/releases/latest"
-_ASSET_NAME = "PC2Sonos-Setup.exe"
+# The release asset that matches this platform: the Windows installer,
+# or on macOS the .dmg for this CPU architecture (see build_macos_app.sh).
+if sys.platform == "darwin":
+    _ASSET_NAME = f"PC2Sonos-macOS-{platform.machine()}.dmg"
+else:
+    _ASSET_NAME = "PC2Sonos-Setup.exe"
 
 _status = {
     "checked": False,

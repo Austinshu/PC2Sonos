@@ -1,10 +1,18 @@
 soco
 requests
-pycaw
-comtypes
-pyaudiowpatch
 flask
 pystray
 pillow
 pyinstaller
 numpy
+# Windows audio stack (WASAPI loopback via pyaudiowpatch; pycaw/comtypes for
+# windows_audio.py). Not installable on macOS, hence the markers.
+pyaudiowpatch; sys_platform == "win32"
+pycaw; sys_platform == "win32"
+comtypes; sys_platform == "win32"
+# macOS audio stack: PortAudio over CoreAudio (audio_backend.py) and the
+# AVFoundation binding used to request audio-input permission (macos_app.py).
+sounddevice; sys_platform == "darwin"
+pyobjc-framework-AVFoundation; sys_platform == "darwin"
+# audioop was removed from the standard library in Python 3.13
+audioop-lts; python_version >= "3.13"

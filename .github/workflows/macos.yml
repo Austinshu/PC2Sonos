@@ -1,0 +1,48 @@
+name: macOS
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Logic tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - run: python test_logic.py
+      - run: python test_macos.py
+
+  build-app:
+    name: Build PC2Sonos.app (${{ matrix.arch }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - run: PYTHON=python bash build_macos_app.sh
+      - run: plutil -p dist/PC2Sonos.app/Contents/Info.plist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PC2Sonos-macOS-${{ matrix.arch }}
+          path: dist/PC2Sonos-macOS-${{ matrix.arch }}.dmg
+          if-no-files-found: error

@@ -4,6 +4,7 @@ import io
 import queue
 import secrets
 import struct
+import sys
 import time
 
 from flask import Flask, Response, jsonify, render_template_string, request
@@ -170,6 +171,14 @@ STYLE_BLOCK = """
 </style>
 """
 
+BLACKHOLE_CREDIT_LINE = """
+<div style="font-size:11px; color:#666; text-align:center; margin-top:4px;">
+  Uses <a href="https://existential.audio/blackhole/" target="_blank" style="color:#888;">BlackHole</a>
+  by Existential Audio (free, open source) as the virtual audio device &mdash; not affiliated with
+  PC2Sonos. macOS support contributed by Michael Shapiro.
+</div>
+"""
+
 VB_CREDIT_LINE = """
 <div style="font-size:11px; color:#666; text-align:center; margin-top:4px;">
   Uses <a href="https://vb-audio.com/Cable/" target="_blank" style="color:#888;">VB-CABLE</a>
@@ -191,6 +200,11 @@ DASHBOARD_HTML = """
 <h1>PC2Sonos</h1>
 <div class="sub">Free. Local, no account. Runs at startup. &mdash;
   <a href="{{donate_url}}" target="_blank" style="color:#1db954;">&hearts; Support this project</a>
+</div>
+
+<div class="card" id="platformBanner" style="display:none; background:#3a2a10; border:1px solid #6b4a12;">
+  <span id="platformText" style="color:#ddd; font-size:13px;"></span>
+  <button id="platformButton" onclick="platformAction()" style="margin-top:8px; background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;"></button>
 </div>
 
 <div class="card" id="updateBanner" style="display:none; background:#132a1c; border:1px solid #1f4d2e; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
@@ -359,7 +373,7 @@ DASHBOARD_HTML = """
   <button onclick="exportDiag()">Export Diagnostics</button>
   <div id="diagResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
 </div>
-""" + VB_CREDIT_LINE + """
+""" + (BLACKHOLE_CREDIT_LINE if sys.platform == "darwin" else VB_CREDIT_LINE) + """
 
 <div class="modal-overlay" id="diagModal">
   <div class="modal-box">
@@ -686,6 +700,34 @@ async function checkDonatePrompt(){
     document.getElementById('donateModal').classList.add('show');
   }
 }
+let _platformAction = null;
+async function checkPlatform(){
+  // Only ever lights up on macOS: BlackHole missing, or macOS hasn't
+  // granted audio-input ("Microphone") permission -- both make capture
+  // silently produce nothing, with no error anywhere else.
+  try {
+    const res = await fetch('/api/platform_status');
+    const s = await res.json();
+    const banner = document.getElementById('platformBanner');
+    const text = document.getElementById('platformText');
+    const btn = document.getElementById('platformButton');
+    if (s.platform !== 'darwin') { banner.style.display = 'none'; return; }
+    if (!s.capture_device_present) {
+      text.textContent = 'BlackHole (the virtual audio device PC2Sonos captures from) is not installed. Install it with: brew install --cask blackhole-2ch';
+      btn.textContent = 'Open BlackHole website';
+      _platformAction = () => window.open('https://existential.audio/blackhole/', '_blank');
+      banner.style.display = 'block';
+    } else if (['denied', 'restricted', 'not determined'].includes(s.microphone_permission)) {
+      text.textContent = 'macOS is blocking audio capture (Microphone permission for PC2Sonos is ' + s.microphone_permission + '). BlackHole counts as a microphone. Turn on PC2Sonos under System Settings > Privacy & Security > Microphone, then quit and reopen PC2Sonos.';
+      btn.textContent = 'Open Microphone Settings';
+      _platformAction = () => fetch('/api/microphone_settings', {method:'POST'});
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch (e) {}
+}
+function platformAction(){ if (_platformAction) _platformAction(); }
 let _updateDownloadUrl = null;
 let _updatePoll = null;
 async function checkUpdate(){
@@ -718,6 +760,8 @@ loadAudioSessions();
 loadSeedIps();
 checkDonatePrompt();
 checkUpdate();
+checkPlatform();
+setInterval(checkPlatform, 5000);
 syncLocalGain('slider');  // shows the warning immediately if the saved value is already past 100%
 setLocalEq();  // shows the warning immediately if a saved EQ band is already past +/-6dB
 _updatePoll = setInterval(checkUpdate, 3000);
@@ -910,6 +954,37 @@ def api_devices():
         "devices": devices,
         "current": get_current_render_device_name(),
     })
+
+
+@app.route("/api/platform_status")
+def api_platform_status():
+    """macOS-specific health the dashboard can't otherwise see: is the
+    capture device (BlackHole) present, and has macOS granted the
+    audio-input permission that reading from it requires (without it
+    CoreAudio delivers silence with no error). On Windows both report
+    n/a."""
+    from audio_engine import find_device_index
+    idx, _ = find_device_index(config["capture_device_substr"], want_input=True)
+    mic = "n/a"
+    if sys.platform == "darwin":
+        try:
+            from macos_app import microphone_status
+            mic = microphone_status()
+        except Exception as e:
+            mic = f"unknown ({e})"
+    return jsonify({"platform": sys.platform, "capture_device_present": idx is not None,
+                    "capture_device_substr": config["capture_device_substr"],
+                    "microphone_permission": mic})
+
+
+@app.route("/api/microphone_settings", methods=["POST"])
+def api_microphone_settings():
+    try:
+        from macos_app import open_microphone_settings
+        open_microphone_settings()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/update_status")
