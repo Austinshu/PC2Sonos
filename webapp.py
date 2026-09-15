@@ -1,10 +1,12 @@
 """Flask app: control dashboard + the WAV endpoints Sonos speakers pull from."""
 
+import audioop
 import io
 import queue
 import secrets
 import struct
 import sys
+import threading
 import time
 
 from flask import Flask, Response, jsonify, render_template_string, request
@@ -15,10 +17,50 @@ from sonos_ctl import speaker_mgr
 
 app = Flask(__name__)
 
+# The rate the Sonos leg is downsampled to in "reduced" streaming-quality
+# mode (see config.sonos_stream_quality) -- half of the standard 44100
+# capture rate, so the math in stream_wav's audioop.ratecv call is exact.
+# The local PC-speaker path is untouched by this; only what's sent to
+# Sonos changes. Never used if the capture rate is already at or below it.
+REDUCED_SAMPLE_RATE = 22050
+
 # (password_text, mtime_ns) cache so we re-read dashboard_password.txt only
 # when it actually changes -- create/edit the file and the next request
 # picks it up, no restart.
 _pw_cache = (None, None)
+
+# In-memory snapshot of what "100%" means for the master volume slider --
+# each enabled speaker's volume + the local boost, captured the moment the
+# slider first moves away from 100. Deliberately NOT in config.json: this
+# is a live-session convenience (temporarily duck everything, then bring
+# it back), not a setting to persist across restarts. Cleared whenever the
+# slider returns to exactly 100, so whatever is sitting there at that
+# moment becomes the new baseline for the next press, instead of scaling
+# relative to itself and drifting further from the real values every time.
+_master_volume_baseline = None
+
+# Sleep timer: {"deadline": monotonic_time, "timer": threading.Timer} while
+# armed, None otherwise. Session-only like the baseline above -- a timer
+# that outlived an app restart would be surprising, not helpful.
+_sleep_timer = None
+_sleep_timer_lock = threading.Lock()
+
+
+def _fire_sleep_timer():
+    """Runs on the threading.Timer's own thread when the countdown reaches
+    zero: turns off every currently-enabled speaker the same way the
+    dashboard's own toggle would, so the watchdog respects it (an enabled
+    speaker that merely stopped gets auto-restarted -- see
+    sonos_ctl.watchdog_tick -- so this has to actually disable them, not
+    just call stop())."""
+    global _sleep_timer
+    with _sleep_timer_lock:
+        _sleep_timer = None
+    base_url = f"http://{get_lan_ip()}:{config['http_port']}"
+    for s in speaker_mgr.list():
+        if s["enabled"]:
+            speaker_mgr.set_enabled(s["uid"], False, base_url)
+    print("[sleep timer] fired -- turned off every enabled speaker")
 
 
 def _dashboard_password():
@@ -78,18 +120,88 @@ STYLE_BLOCK = """
   * { box-sizing:border-box; }
   body {
     font-family: -apple-system, "Segoe UI", sans-serif;
-    background:#0e0e0e; color:#eee; padding:28px 24px; max-width:640px; margin:0 auto;
+    background:#0e0e0e; color:#eee; padding:28px 24px; max-width:1080px; margin:0 auto;
     -webkit-font-smoothing:antialiased;
   }
-  h1 { font-size:21px; font-weight:700; letter-spacing:-0.02em; margin:0 0 4px; }
-  .sub { color:#888; font-size:13px; margin-bottom:22px; }
+  h1 { font-size:20px; font-weight:700; letter-spacing:-0.02em; margin:0 0 2px; }
+  .sub { color:#888; font-size:13px; }
   .sub a { text-decoration:none; }
   .sub a:hover { text-decoration:underline; }
 
+  /* top identity bar: icon + name/tagline on the left, support link on
+     the right -- replaces the old bare <h1> so the page reads as an app
+     with a header, not a scrolling settings form */
+  .topbar {
+    display:flex; align-items:center; justify-content:space-between;
+    gap:16px; flex-wrap:wrap; margin-bottom:20px;
+  }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .brand-icon {
+    width:40px; height:40px; border-radius:11px; background:#132a1c;
+    border:1px solid #1f4d2e; display:flex; align-items:center; justify-content:center;
+    flex-shrink:0; color:#1db954;
+  }
+  .brand-icon svg { width:22px; height:22px; }
+  .donate-link { color:#1db954; font-size:13px; text-decoration:none; white-space:nowrap; }
+  .donate-link:hover { text-decoration:underline; }
+
+  /* at-a-glance status strip -- the "dashboard" part of the dashboard:
+     the handful of numbers you'd otherwise have to read the whole page
+     to piece together, up front and large */
+  .stat-row {
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));
+    gap:12px; margin-bottom:16px;
+  }
+  .stat-tile {
+    background:#1a1a1a; border:1px solid #262626; border-radius:12px;
+    padding:13px 16px;
+  }
+  .stat-label {
+    font-size:10.5px; color:#888; text-transform:uppercase; letter-spacing:.06em;
+    margin-bottom:5px; font-weight:600;
+  }
+  .stat-value {
+    font-size:19px; font-weight:700; color:#eee;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .stat-value.good { color:#4caf50; }
+  .stat-value.warn { color:#e0a030; }
+
+  /* platformBanner's two states: something actually needs fixing (warn,
+     the original orange) vs. just worth knowing (info, calm blue) -- see
+     checkPlatform(). A permission granted + working is NOT the same as
+     nothing to say, so this banner stays visible either way on macOS
+     instead of disappearing the moment there's no error left to show. */
+  #platformBanner.banner-warn { background:#3a2a10; border:1px solid #6b4a12; }
+  #platformBanner.banner-info { background:#12233a; border:1px solid #1f3f6b; }
+
+  /* live input level meter, in the stat-row's 4th tile -- a bar instead
+     of a number since "how loud" is more legible as a glance-length than
+     a percentage would be. Width is set inline per-reading by JS. */
+  .level-track { background:#333; border-radius:99px; height:10px; margin-top:3px; overflow:hidden; }
+  .level-fill { background:#1db954; height:100%; width:0%; border-radius:99px; transition:width .12s linear; }
+
+  /* tile grid: every card is roughly the same size, wrapping like a
+     dashboard instead of stacking in one or two long columns. Speakers
+     gets .card-wide (2 tracks) since it holds a variable-length list;
+     everything else is a uniform tile. Collapses to a single column
+     below the media query near the bottom of this block. */
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:14px; align-items:start; }
+  .card-wide { grid-column:span 2; }
+
   .card {
     background:#1a1a1a; border:1px solid #262626; border-radius:12px;
-    padding:16px 18px; margin-bottom:14px;
+    padding:16px 18px; margin-bottom:0;
   }
+  .card-header { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .card-icon {
+    width:26px; height:26px; border-radius:8px; background:#132a1c;
+    color:#1db954; display:flex; align-items:center; justify-content:center; flex-shrink:0;
+  }
+  .card-icon svg { width:15px; height:15px; }
+  .card-title { font-size:14px; font-weight:700; color:#eee; }
+  .card-desc { font-size:12px; color:#999; line-height:1.5; margin:0; }
+  details.card .card-header { margin-bottom:0; }
   details.card { padding:0; }
   details.card > summary { list-style:none; }
   details.card > summary::-webkit-details-marker { display:none; }
@@ -98,6 +210,20 @@ STYLE_BLOCK = """
     transition:transform .15s ease;
   }
   details.card[open] > summary::before { transform:rotate(90deg); }
+
+  /* small "what's this?" disclosure for the longer explanatory copy --
+     collapsed by default so a tile shows its controls first and the
+     paragraph explaining them only when asked for, instead of every
+     card being a wall of text before you reach anything clickable. */
+  .info-toggle { margin:-4px 0 12px; }
+  .info-toggle > summary {
+    cursor:pointer; list-style:none; font-size:11px; color:#777;
+    display:inline-flex; align-items:center; gap:4px; user-select:none;
+  }
+  .info-toggle > summary::-webkit-details-marker { display:none; }
+  .info-toggle > summary:hover { color:#aaa; }
+  .info-toggle[open] > summary { color:#999; margin-bottom:6px; }
+  .info-toggle .card-desc { padding-left:1px; }
 
   label { font-size:13px; color:#aaa; display:block; margin-bottom:8px; line-height:1.4; }
 
@@ -168,6 +294,14 @@ STYLE_BLOCK = """
   .modal-box p { font-size:13px; color:#ccc; line-height:1.5; margin:0 0 18px 0; }
   .modal-actions { display:flex; justify-content:flex-end; gap:10px; }
   .btn-cancel { background:#2a2a2a; color:#eee; }
+
+  .btn-ghost { background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px; }
+  .btn-blue { background:#2b6cb0; color:#fff; }
+
+  @media (max-width:860px) {
+    body { max-width:640px; }
+    .grid { grid-template-columns:1fr; }
+  }
 </style>
 """
 
@@ -194,17 +328,26 @@ DASHBOARD_HTML = """
 <head>
 <title>PC2Sonos</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230e0e0e'/%3E%3Cg%20transform='translate(3,4)'%3E%3Cpolygon%20points='2,9%206,9%2011,4%2011,20%206,15%202,15'%20fill='%231db954'/%3E%3Cpath%20d='M15%208%20A%206%206%200%200%201%2015%2016'%20stroke='%231db954'%20stroke-width='2.2'%20fill='none'%20stroke-linecap='round'/%3E%3Cpath%20d='M18.5%204.5%20A%2011%2011%200%200%201%2018.5%2019.5'%20stroke='%231db954'%20stroke-width='2.2'%20fill='none'%20stroke-linecap='round'%20opacity='.55'/%3E%3C/g%3E%3C/svg%3E">
 """ + STYLE_BLOCK + """
 </head>
 <body>
-<h1>PC2Sonos</h1>
-<div class="sub">Free. Local, no account. Runs at startup. &mdash;
-  <a href="{{donate_url}}" target="_blank" style="color:#1db954;">&hearts; Support this project</a>
+<div class="topbar">
+  <div class="brand">
+    <div class="brand-icon">
+      <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="2,9 6,9 11,4 11,20 6,15 2,15"/><path d="M15 8 A 6 6 0 0 1 15 16" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M18.5 4.5 A 11 11 0 0 1 18.5 19.5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" opacity=".55"/></svg>
+    </div>
+    <div>
+      <h1>PC2Sonos</h1>
+      <div class="sub">Free. Local, no account. Runs at startup.</div>
+    </div>
+  </div>
+  <a href="{{donate_url}}" target="_blank" class="donate-link">&hearts; Support this project</a>
 </div>
 
-<div class="card" id="platformBanner" style="display:none; background:#3a2a10; border:1px solid #6b4a12;">
+<div class="card" id="platformBanner" style="display:none;">
   <span id="platformText" style="color:#ddd; font-size:13px;"></span>
-  <button id="platformButton" onclick="platformAction()" style="margin-top:8px; background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;"></button>
+  <button id="platformButton" onclick="platformAction()" class="btn-ghost" style="margin-top:8px;"></button>
 </div>
 
 <div class="card" id="updateBanner" style="display:none; background:#132a1c; border:1px solid #1f4d2e; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
@@ -212,17 +355,44 @@ DASHBOARD_HTML = """
   <button onclick="downloadUpdate()">Download</button>
 </div>
 
-<div class="card">
-  <div style="display:flex; align-items:center; justify-content:space-between;">
-    <label style="margin-bottom:0;">Sonos speakers</label>
-    <button onclick="rescan()" style="background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;">Rescan</button>
+<div class="stat-row">
+  <div class="stat-tile">
+    <div class="stat-label">Streaming</div>
+    <div class="stat-value" id="statStreaming">&mdash;</div>
   </div>
-  <div style="font-size:11px; color:#777; margin:2px 0 8px;">
-    &#9733; = default speaker: streamed to the instant PC2Sonos starts, before
-    a network scan finishes. Click a star to set it.
+  <div class="stat-tile">
+    <div class="stat-label">Sync delay</div>
+    <div class="stat-value" id="statDelay">{{delay}} ms</div>
   </div>
+  <div class="stat-tile">
+    <div class="stat-label">PC output device</div>
+    <div class="stat-value" id="statDevice">&mdash;</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-label">Input level</div>
+    <div class="level-track"><div class="level-fill" id="levelFill"></div></div>
+  </div>
+</div>
+
+<div class="grid">
+
+<div class="card card-wide">
+  <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="2,9 6,9 11,4 11,20 6,15 2,15"/><path d="M15 8 A 6 6 0 0 1 15 16" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M18.5 4.5 A 11 11 0 0 1 18.5 19.5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" opacity=".55"/></svg></span>
+    <span class="card-title">Sonos speakers</span>
+    <button onclick="rescan()" class="btn-ghost" style="margin-left:auto;">Rescan</button>
+  </div>
+  <details class="info-toggle">
+    <summary>&#9432; What does &#9733; mean?</summary>
+    <div class="card-desc">&#9733; = default speaker: streamed to the instant PC2Sonos starts, before
+    a network scan finishes. Click a star to set it.</div>
+  </details>
   <div style="padding:10px 0 12px; border-bottom:1px solid #232323; margin-bottom:4px;">
-    <label style="margin-bottom:6px;">Turn everything down together &mdash; scales every enabled Sonos speaker and the PC boost from wherever they're each set right now (individual volumes below stay fully adjustable afterward)</label>
+    <label style="margin-bottom:6px;">Turn everything down together</label>
+    <details class="info-toggle">
+      <summary>&#9432; How does this work?</summary>
+      <div class="card-desc">Scales every enabled Sonos speaker and the PC boost from wherever they're each set right now (individual volumes below stay fully adjustable afterward).</div>
+    </details>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <input type="range" min="0" max="100" step="1" id="masterVolume" value="100"
              oninput="document.getElementById('masterVolumeNum').value = this.value; paintRange(this)"
@@ -257,12 +427,39 @@ DASHBOARD_HTML = """
 </div>
 
 <div class="card">
-  <label>PC speaker output device &mdash; this is the key setting for keeping your PC's own speakers in sync with Sonos: it's WHICH physical speaker/headphones PC2Sonos plays the delayed audio to. PC2Sonos auto-picks the first real output it finds, which is usually right -- but if your PC speakers don't seem to be playing the delayed feed at all, or you have more than one output connected (headphones + speakers, a monitor's speakers, etc.), check this first before touching anything else below. (Virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list -- they're never a real speaker.)</label>
+  <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="2.5" y="14" width="5" height="7" rx="2"/><rect x="16.5" y="14" width="5" height="7" rx="2"/></svg></span>
+    <span class="card-title">PC speaker output</span>
+  </div>
+  <details class="info-toggle">
+    <summary>&#9432; What does this do?</summary>
+    <div class="card-desc">This is the key setting for keeping your PC's own speakers in sync with Sonos: it's WHICH physical speaker/headphones PC2Sonos plays the delayed audio to. PC2Sonos auto-picks the first real output it finds, which is usually right -- but if your PC speakers don't seem to be playing the delayed feed at all, or you have more than one output connected (headphones + speakers, a monitor's speakers, etc.), check this first before touching anything else below. (Virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list -- they're never a real speaker.)</div>
+  </details>
   <select id="renderDevice" onchange="setDevice()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
 </div>
 
 <div class="card">
-  <label>Local PC-speaker sync delay &mdash; raise until your PC speakers and Sonos play together, with no echo</label>
+  <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14 0"/><path d="M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/></svg></span>
+    <span class="card-title">Sonos streaming quality</span>
+  </div>
+  <details class="info-toggle">
+    <summary>&#9432; What does this do?</summary>
+    <div class="card-desc">Full quality sends Sonos the exact captured audio (typically 44.1kHz) -- the same as always. Reduced halves the sample rate sent to Sonos only; your PC speakers are never affected. Lower bandwidth means less for a weak Wi-Fi link to a speaker to keep up with, at the cost of slightly less crisp highs -- worth trying if a speaker keeps cutting in and out.</div>
+  </details>
+  <select id="streamQuality" onchange="setStreamQuality()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+    <option value="full">Full quality</option>
+    <option value="reduced">Reduced bandwidth</option>
+  </select>
+  <div id="streamQualityResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></span>
+    <span class="card-title">Local PC-speaker sync delay</span>
+  </div>
+  <div class="card-desc">Raise until your PC speakers and Sonos play together, with no echo.</div>
   <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
     <input type="range" min="0" max="4000" step="1" id="delay" value="{{delay}}"
            oninput="syncDelay('slider')" style="flex:1; min-width:150px;">
@@ -271,12 +468,12 @@ DASHBOARD_HTML = """
            style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
     <span>ms</span>
     <button onclick="setDelay()">Apply</button>
-    <button onclick="autoCalibrate('silent')" style="background:#2b6cb0; color:#fff;">Auto</button>
+    <button onclick="autoCalibrate('silent')" class="btn-blue">Auto</button>
   </div>
   <div id="calibResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
-  <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a; font-size:12px;">
-    <div style="color:#ccc; font-weight:600; margin-bottom:6px;">Prefer a test tone + microphone instead?</div>
-    <div style="color:#aaa; line-height:1.5;">
+  <details style="margin-top:12px; font-size:12px; color:#aaa;">
+    <summary style="cursor:pointer; color:#ccc;">Prefer a test tone + microphone instead?</summary>
+    <div style="margin-top:10px; line-height:1.5;">
       Put the microphone (built-in laptop mic, or any USB/headset mic) somewhere it
       can clearly hear <strong>both</strong> your PC speakers and the Sonos speaker(s)
       you're syncing to at once &mdash; roughly the midpoint between them, not sitting
@@ -284,15 +481,18 @@ DASHBOARD_HTML = """
       only hears the PC speakers well and will give a bad reading. Works best in a
       quiet room.
       <div style="margin-top:8px;">
-        <button onclick="autoCalibrate('acoustic')" style="background:#2b6cb0; color:#fff;">Calibrate with test tone</button>
+        <button onclick="autoCalibrate('acoustic')" class="btn-blue">Calibrate with test tone</button>
       </div>
     </div>
-  </div>
+  </details>
 </div>
 
 <details class="card" style="padding:0;">
-  <summary style="cursor:pointer; padding:16px 18px; font-size:13px; color:#ccc; font-weight:600;">
-    Advanced: volume boost, EQ &amp; audio source
+  <summary style="cursor:pointer; padding:16px 18px;">
+    <span class="card-header" style="margin-bottom:0; display:inline-flex;">
+      <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="4" x2="5" y2="20"/><circle cx="5" cy="9" r="2" fill="currentColor" stroke="none"/><line x1="12" y1="4" x2="12" y2="20"/><circle cx="12" cy="15" r="2" fill="currentColor" stroke="none"/><line x1="19" y1="4" x2="19" y2="20"/><circle cx="19" cy="7" r="2" fill="currentColor" stroke="none"/></svg></span>
+      <span class="card-title">Advanced: volume boost, EQ &amp; audio source</span>
+    </span>
   </summary>
   <div style="padding:14px 18px 16px;">
     <div style="font-size:11px; color:#999; line-height:1.5;">
@@ -303,7 +503,11 @@ DASHBOARD_HTML = """
       is at your own risk to your hardware, not just audio quality.
     </div>
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
-      <label>PC speaker volume boost &mdash; Windows' own volume only controls what PC2Sonos captures, not what this device plays back; use this if an aux/line-out speaker is too quiet even at 100% Windows volume</label>
+      <label style="margin-bottom:2px;">PC speaker volume boost</label>
+      <details class="info-toggle">
+        <summary>&#9432; What does this do?</summary>
+        <div class="card-desc">Windows' own volume only controls what PC2Sonos captures, not what this device plays back; use this if an aux/line-out speaker is too quiet even at 100% Windows volume.</div>
+      </details>
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <input type="range" min="0" max="500" step="1" id="localGain" value="{{local_gain_percent}}"
                oninput="syncLocalGain('slider')" style="flex:1; min-width:150px;">
@@ -321,7 +525,11 @@ DASHBOARD_HTML = """
       </div>
     </div>
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
-      <label>PC speaker EQ &mdash; bass/mid/treble for the local speaker path only (Sonos speakers keep their own EQ in the Sonos app)</label>
+      <label style="margin-bottom:2px;">PC speaker EQ</label>
+      <details class="info-toggle">
+        <summary>&#9432; What does this do?</summary>
+        <div class="card-desc">Bass/mid/treble for the local speaker path only (Sonos speakers keep their own EQ in the Sonos app).</div>
+      </details>
       <div id="eqSliders" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;">
         <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
           <input type="range" class="eq-fader" min="-24" max="24" step="1" id="eqBass" value="{{eq_bass_db}}"
@@ -344,7 +552,7 @@ DASHBOARD_HTML = """
           <span id="eqTrebleVal" style="font-size:11px; color:#aaa;">{{eq_treble_db}} dB</span>
           <span style="font-size:11px; color:#777;">Treble</span>
         </div>
-        <button onclick="resetLocalEq()" style="background:#333; color:#eee; font-weight:400; align-self:flex-start; padding:4px 10px; font-size:12px;">Reset</button>
+        <button onclick="resetLocalEq()" class="btn-ghost" style="align-self:flex-start;">Reset</button>
       </div>
       <div id="eqWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:6px;">
         &#9888; Past &plusmn;6dB starts sounding less like "more/less bass" and more like a different speaker -- large boosts can also introduce noise.
@@ -353,11 +561,12 @@ DASHBOARD_HTML = """
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
       <div style="display:flex; align-items:center; justify-content:space-between;">
         <label style="margin-bottom:0;">Audio source &mdash; what PC2Sonos sends to Sonos</label>
-        <button onclick="loadAudioSessions()" style="background:#333; color:#eee; font-weight:400; padding:4px 10px; font-size:12px;">Refresh</button>
+        <button onclick="loadAudioSessions()" class="btn-ghost">Refresh</button>
       </div>
-      <div style="font-size:11px; color:#777; margin:2px 0 8px;">
-        An app only shows up here once it's made some sound since PC2Sonos started (or since the last Refresh). Windows can't always capture a specific app this way &mdash; copy-protected playback and some elevated apps aren't capturable regardless. Check one or more apps to mix just those into the Sonos stream, or leave none checked to send everything.
-      </div>
+      <details class="info-toggle">
+        <summary>&#9432; How does this work?</summary>
+        <div class="card-desc">An app only shows up here once it's made some sound since PC2Sonos started (or since the last Refresh). Windows can't always capture a specific app this way &mdash; copy-protected playback and some elevated apps aren't capturable regardless. Check one or more apps to mix just those into the Sonos stream, or leave none checked to send everything.</div>
+      </details>
       <label style="display:flex; align-items:center; gap:8px; font-weight:400; font-size:13px; padding:4px 0;">
         <input type="checkbox" id="captureWholeSystem" onchange="onWholeSystemToggle()">
         Whole system (default)
@@ -369,9 +578,34 @@ DASHBOARD_HTML = """
 </details>
 
 <div class="card">
-  <label style="margin-bottom:0;">Troubleshooting</label>
+  <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg></span>
+    <span class="card-title">Sleep timer</span>
+  </div>
+  <div class="card-desc" style="margin-bottom:8px;">Stops every currently-streaming Sonos speaker after the chosen time (your PC speakers, and any speaker you turn on afterward, are unaffected).</div>
+  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+    <select id="sleepMinutes" style="padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+      <option value="15">15 min</option>
+      <option value="30">30 min</option>
+      <option value="45">45 min</option>
+      <option value="60" selected>60 min</option>
+      <option value="90">90 min</option>
+    </select>
+    <button onclick="startSleepTimer()">Start</button>
+    <button id="cancelSleepBtn" onclick="cancelSleepTimer()" class="btn-ghost" style="display:none;">Cancel</button>
+  </div>
+  <div id="sleepTimerStatus" style="margin-top:8px; font-size:12px; color:#888;"></div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg></span>
+    <span class="card-title">Troubleshooting</span>
+  </div>
   <button onclick="exportDiag()">Export Diagnostics</button>
   <div id="diagResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
+</div>
+
 </div>
 """ + (BLACKHOLE_CREDIT_LINE if sys.platform == "darwin" else VB_CREDIT_LINE) + """
 
@@ -424,10 +658,16 @@ async function refresh(){
   const data = await res.json();
   const el = document.getElementById('speakers');
   el.innerHTML = '';
+  const statStreaming = document.getElementById('statStreaming');
   if (data.length === 0) {
     el.innerHTML = '<div style="color:#888; padding:10px 0;">Searching for Sonos speakers...</div>';
+    statStreaming.textContent = '—';
+    statStreaming.className = 'stat-value';
     return;
   }
+  const streaming = data.filter(s => s.streaming).length;
+  statStreaming.textContent = streaming + ' / ' + data.length;
+  statStreaming.className = 'stat-value ' + (streaming > 0 ? 'good' : 'warn');
   data.forEach(s => {
     const div = document.createElement('div');
     div.className = 'speaker';
@@ -506,18 +746,15 @@ async function applyMasterVolume(){
     body: JSON.stringify({percent})});
   const data = await res.json();
   if (!data.ok) { el.textContent = 'Failed.'; return; }
-  // this is a one-shot action, not a persistent position -- reset to
-  // 100 so the next press always scales from the real current values,
-  // never compounds off wherever the slider was last left
-  const masterSlider = document.getElementById('masterVolume');
-  masterSlider.value = 100;
-  document.getElementById('masterVolumeNum').value = 100;
-  paintRange(masterSlider);
+  // slider deliberately stays put -- drag it back toward 100 to bring
+  // everything back to where it was before you started turning it down
+  // (the backend scales from a fixed baseline, not from whatever the
+  // last press left things at, so this is always reversible)
   if (data.local_gain_percent !== undefined) {
     document.getElementById('localGain').value = data.local_gain_percent;
     syncLocalGain('slider');
   }
-  el.textContent = 'Done -- individual volumes below are updated.';
+  el.textContent = 'Set to ' + percent + '% -- individual volumes below are updated.';
   refresh();
 }
 function syncDelay(source){
@@ -532,6 +769,7 @@ function syncDelay(source){
     slider.value = v;
   }
   paintRange(slider);
+  document.getElementById('statDelay').textContent = slider.value + ' ms';
 }
 async function setDelay(){
   const v = document.getElementById('delay').value;
@@ -597,6 +835,8 @@ async function autoCalibrate(method){
       if (s.state === 'done' && s.result_ms !== null && s.result_ms !== undefined) {
         document.getElementById('delay').value = s.result_ms;
         document.getElementById('delayNum').value = s.result_ms;
+        paintRange(document.getElementById('delay'));
+        document.getElementById('statDelay').textContent = s.result_ms + ' ms';
       }
     }
   }, 700);
@@ -613,9 +853,11 @@ async function loadDevices(){
     if (d.name === data.current) opt.selected = true;
     sel.appendChild(opt);
   });
+  document.getElementById('statDevice').textContent = data.current || '—';
 }
 async function setDevice(){
   const sel = document.getElementById('renderDevice');
+  document.getElementById('statDevice').textContent = sel.value || '—';
   await fetch('/api/render_device', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({device: sel.value})});
 }
 async function loadAudioSessions(){
@@ -702,9 +944,12 @@ async function checkDonatePrompt(){
 }
 let _platformAction = null;
 async function checkPlatform(){
-  // Only ever lights up on macOS: BlackHole missing, or macOS hasn't
-  // granted audio-input ("Microphone") permission -- both make capture
-  // silently produce nothing, with no error anywhere else.
+  // Only ever shows on macOS. Two different states, not one: something
+  // actually broken (BlackHole missing, permission denied -- capture
+  // silently produces nothing, with no error anywhere else) vs. nothing
+  // broken but still worth explaining (the Microphone indicator staying
+  // lit the whole time PC2Sonos runs, which is expected -- see the
+  // info branch below -- but looks alarming with zero context).
   try {
     const res = await fetch('/api/platform_status');
     const s = await res.json();
@@ -712,18 +957,30 @@ async function checkPlatform(){
     const text = document.getElementById('platformText');
     const btn = document.getElementById('platformButton');
     if (s.platform !== 'darwin') { banner.style.display = 'none'; return; }
+    banner.classList.remove('banner-warn', 'banner-info');
     if (!s.capture_device_present) {
+      banner.classList.add('banner-warn');
       text.textContent = 'BlackHole (the virtual audio device PC2Sonos captures from) is not installed. Install it with: brew install --cask blackhole-2ch';
+      btn.style.display = 'inline-block';
       btn.textContent = 'Open BlackHole website';
       _platformAction = () => window.open('https://existential.audio/blackhole/', '_blank');
       banner.style.display = 'block';
     } else if (['denied', 'restricted', 'not determined'].includes(s.microphone_permission)) {
+      banner.classList.add('banner-warn');
       text.textContent = 'macOS is blocking audio capture (Microphone permission for PC2Sonos is ' + s.microphone_permission + '). BlackHole counts as a microphone. Turn on PC2Sonos under System Settings > Privacy & Security > Microphone, then quit and reopen PC2Sonos.';
+      btn.style.display = 'inline-block';
       btn.textContent = 'Open Microphone Settings';
       _platformAction = () => fetch('/api/microphone_settings', {method:'POST'});
       banner.style.display = 'block';
     } else {
-      banner.style.display = 'none';
+      // permission is fine and audio is flowing -- nothing to FIX, but
+      // the Microphone indicator being lit the entire time this runs is
+      // real and needs an explanation, not silence, or it just looks
+      // like the app is spying (see webapp.api_platform_status)
+      banner.classList.add('banner-info');
+      text.textContent = "macOS may show a Microphone indicator the whole time PC2Sonos runs -- that's expected, not a bug: reading from BlackHole (the virtual audio device this app streams your system audio through) counts as \"Microphone\" access to macOS, even though BlackHole only ever carries your Mac's own audio, never your room or your voice. Your real microphone is only ever touched if you press \"Calibrate with test tone\" on the dashboard, which is optional, and listens for about 6 seconds.";
+      btn.style.display = 'none';
+      banner.style.display = 'block';
     }
   } catch (e) {}
 }
@@ -754,10 +1011,84 @@ async function checkUpdate(){
 function downloadUpdate(){
   if (_updateDownloadUrl) window.open(_updateDownloadUrl, '_blank');
 }
+async function loadLevel(){
+  try {
+    const res = await fetch('/api/level');
+    const data = await res.json();
+    document.getElementById('levelFill').style.width = data.level + '%';
+  } catch (e) {}
+}
+async function loadStreamQuality(){
+  const res = await fetch('/api/stream_quality');
+  const data = await res.json();
+  document.getElementById('streamQuality').value = data.quality;
+}
+async function setStreamQuality(){
+  const el = document.getElementById('streamQualityResult');
+  const quality = document.getElementById('streamQuality').value;
+  el.textContent = 'Applying -- Sonos speakers will briefly reconnect...';
+  const res = await fetch('/api/stream_quality', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({quality})});
+  const data = await res.json();
+  el.textContent = data.ok ? 'Applied.' : ('Failed: ' + (data.error || 'unknown error'));
+}
+let sleepCountdownInterval = null;
+let sleepRemainingSeconds = null;
+function formatMMSS(totalSeconds){
+  const m = Math.floor(totalSeconds / 60), s = totalSeconds % 60;
+  return m + ':' + String(s).padStart(2, '0');
+}
+function renderSleepStatus(){
+  const el = document.getElementById('sleepTimerStatus');
+  const cancelBtn = document.getElementById('cancelSleepBtn');
+  if (sleepRemainingSeconds === null) {
+    el.textContent = '';
+    cancelBtn.style.display = 'none';
+    return;
+  }
+  el.textContent = 'Stopping Sonos playback in ' + formatMMSS(sleepRemainingSeconds) + '...';
+  cancelBtn.style.display = 'inline-block';
+}
+function tickSleepCountdown(){
+  if (sleepRemainingSeconds === null) return;
+  sleepRemainingSeconds = Math.max(0, sleepRemainingSeconds - 1);
+  renderSleepStatus();
+  if (sleepRemainingSeconds === 0) {
+    clearInterval(sleepCountdownInterval);
+    sleepCountdownInterval = null;
+    sleepRemainingSeconds = null;
+    setTimeout(refresh, 1500);  // give the backend a moment to actually stop things, then reflect it
+  }
+}
+function armSleepCountdown(remainingSeconds){
+  sleepRemainingSeconds = remainingSeconds;
+  if (sleepCountdownInterval) clearInterval(sleepCountdownInterval);
+  sleepCountdownInterval = remainingSeconds === null ? null : setInterval(tickSleepCountdown, 1000);
+  renderSleepStatus();
+}
+async function startSleepTimer(){
+  const minutes = parseInt(document.getElementById('sleepMinutes').value);
+  const res = await fetch('/api/sleep_timer', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({minutes})});
+  const data = await res.json();
+  armSleepCountdown(data.remaining_seconds);
+}
+async function cancelSleepTimer(){
+  await fetch('/api/sleep_timer', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({minutes: 0})});
+  armSleepCountdown(null);
+}
+async function loadSleepTimer(){
+  const res = await fetch('/api/sleep_timer');
+  const data = await res.json();
+  armSleepCountdown(data.active ? data.remaining_seconds : null);
+}
 refresh();
 loadDevices();
 loadAudioSessions();
 loadSeedIps();
+loadStreamQuality();
+loadSleepTimer();
 checkDonatePrompt();
 checkUpdate();
 checkPlatform();
@@ -766,6 +1097,7 @@ syncLocalGain('slider');  // shows the warning immediately if the saved value is
 setLocalEq();  // shows the warning immediately if a saved EQ band is already past +/-6dB
 _updatePoll = setInterval(checkUpdate, 3000);
 setInterval(refresh, 4000);
+setInterval(loadLevel, 300);
 </script>
 </body>
 </html>
@@ -882,24 +1214,98 @@ def api_set_volume(uid):
 @app.route("/api/master_volume", methods=["POST"])
 def api_master_volume():
     """Scale every enabled Sonos speaker's volume AND the PC speaker
-    boost down together in one action, from whatever they're each
-    currently set to -- not a live/continuous control, so there's no
-    "current master position" to drift out of sync: every press scales
-    from the real values at that moment and writes real new values via
-    the same per-speaker/local-gain paths the individual controls use.
+    boost together, relative to a fixed baseline -- whatever they were
+    set to the last time this slider sat at 100% -- rather than to
+    whatever they currently are. Scaling from the live current values
+    (the old behavior) compounds on every press (50% twice lands on 25%,
+    not back to the first 50%) and can never be undone by sliding back
+    up. Moving the slider back to 100 restores the baseline exactly, and
+    that restored state becomes the new baseline for next time.
     Deliberately one-directional (0-100%, never boosts past what's
     already configured) so this can never push the PC boost past a
     level the user hasn't already explicitly approved."""
+    global _master_volume_baseline
     data = request.get_json(force=True)
     percent = max(0, min(100, int(data.get("percent", 100))))
+
+    if _master_volume_baseline is None:
+        _master_volume_baseline = {
+            "speakers": {s["uid"]: s["volume"] for s in speaker_mgr.list() if s["enabled"]},
+            "local_gain_percent": round(config.get("local_render_gain", 1.0) * 100),
+        }
+
     scale = percent / 100.0
-    for s in speaker_mgr.list():
-        if s["enabled"]:
-            speaker_mgr.set_volume(s["uid"], round(s["volume"] * scale))
-    new_gain_percent = round(config.get("local_render_gain", 1.0) * 100 * scale)
+    for uid, base_volume in _master_volume_baseline["speakers"].items():
+        speaker_mgr.set_volume(uid, round(base_volume * scale))
+    new_gain_percent = round(_master_volume_baseline["local_gain_percent"] * scale)
     config["local_render_gain"] = new_gain_percent / 100.0
     save_config(config)
+
+    if percent == 100:
+        _master_volume_baseline = None
+
     return jsonify({"ok": True, "local_gain_percent": new_gain_percent})
+
+
+@app.route("/api/level")
+def api_level():
+    """Live input level (0-100) for the dashboard's meter -- one shared
+    reading since every enabled speaker (and the local path) gets the
+    same captured signal. Polled frequently (see the dashboard's own
+    poll interval), so this must stay cheap: just reads an already-
+    computed float, no audio work happens on this request."""
+    return jsonify({"level": round(broadcaster.level_pct, 1)})
+
+
+@app.route("/api/sleep_timer", methods=["GET", "POST"])
+def api_sleep_timer():
+    """GET reports the countdown (for a page load/reload mid-countdown);
+    POST {minutes: N>0} arms it, replacing any timer already running,
+    and {minutes: 0} cancels. See _fire_sleep_timer for what firing
+    actually does."""
+    global _sleep_timer
+    if request.method == "GET":
+        with _sleep_timer_lock:
+            if _sleep_timer is None:
+                return jsonify({"active": False, "remaining_seconds": None})
+            remaining = max(0, int(_sleep_timer["deadline"] - time.monotonic()))
+        return jsonify({"active": True, "remaining_seconds": remaining})
+
+    data = request.get_json(force=True)
+    minutes = max(0, min(600, int(data.get("minutes", 0))))
+    with _sleep_timer_lock:
+        if _sleep_timer is not None:
+            _sleep_timer["timer"].cancel()
+            _sleep_timer = None
+        if minutes > 0:
+            t = threading.Timer(minutes * 60, _fire_sleep_timer)
+            t.daemon = True
+            t.start()
+            _sleep_timer = {"deadline": time.monotonic() + minutes * 60, "timer": t}
+        active = _sleep_timer is not None
+        remaining = minutes * 60 if active else None
+    return jsonify({"ok": True, "active": active, "remaining_seconds": remaining})
+
+
+@app.route("/api/stream_quality", methods=["GET", "POST"])
+def api_stream_quality():
+    """The Sonos-only bandwidth setting (see REDUCED_SAMPLE_RATE and
+    stream_wav) -- separate from local_gain/local_eq's config routes
+    because changing it has to force every currently-streaming speaker
+    to reconnect (a live connection's WAV header already declared the
+    old sample rate; there's no way to change that mid-stream), the same
+    way switching capture mode already does."""
+    if request.method == "GET":
+        return jsonify({"quality": config.get("sonos_stream_quality", "full")})
+    data = request.get_json(force=True)
+    quality = data.get("quality")
+    if quality not in ("full", "reduced"):
+        return jsonify({"ok": False, "error": "quality must be 'full' or 'reduced'"}), 400
+    config["sonos_stream_quality"] = quality
+    save_config(config)
+    base_url = f"http://{get_lan_ip()}:{config['http_port']}"
+    speaker_mgr.reconnect_all_streaming(base_url)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/delay", methods=["POST"])
@@ -1088,7 +1494,20 @@ def wav_header(sample_rate, channels, sample_width):
 @app.route("/stream/<uid>.wav")
 def stream_wav(uid):
     def generate():
-        yield wav_header(config["sample_rate"], config["channels"], config["sample_width"])
+        in_rate = config["sample_rate"]
+        channels = config["channels"]
+        sample_width = config["sample_width"]
+        # "reduced" halves the rate sent to THIS speaker only -- the local
+        # PC-speaker path reads straight from the broadcaster untouched,
+        # so this never affects it. Decided once per connection: a change
+        # mid-stream forces a reconnect anyway (api_stream_quality), which
+        # starts a fresh generate() call and picks up the new setting.
+        out_rate = in_rate
+        if config.get("sonos_stream_quality") == "reduced" and in_rate > REDUCED_SAMPLE_RATE:
+            out_rate = REDUCED_SAMPLE_RATE
+        resample_state = None
+
+        yield wav_header(out_rate, channels, sample_width)
         sid, q = broadcaster.subscribe(maxlen=200)
         # Sonos pulls this over HTTP in real time. If this generator ever
         # falls a little behind for a moment -- a GC pause, another
@@ -1131,6 +1550,9 @@ def stream_wav(uid):
                               f"(~{backlog * chunk_ms:.0f}ms) for {uid}; "
                               f"dropped {dropped} chunks (~{dropped * chunk_ms:.0f}ms) "
                               f"-- this is an audible skip on the Sonos side")
+                if out_rate != in_rate:
+                    chunk, resample_state = audioop.ratecv(
+                        chunk, sample_width, channels, in_rate, out_rate, resample_state)
                 yield chunk
         finally:
             broadcaster.unsubscribe(sid)

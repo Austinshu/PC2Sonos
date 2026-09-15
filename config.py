@@ -133,6 +133,11 @@ DEFAULT_CONFIG = {
     "channels": 2,
     "sample_width": 2,  # bytes (16-bit PCM)
     "http_port": 5757,
+    # "full" (default) sends Sonos the exact captured sample rate. "reduced"
+    # halves it (see webapp.REDUCED_SAMPLE_RATE) for JUST the Sonos leg --
+    # the local PC-speaker path is never touched by this -- to shrink the
+    # bandwidth a flaky Wi-Fi link to a speaker has to keep up with.
+    "sonos_stream_quality": "full",
     "speakers": {},  # uid -> {"enabled": bool, "volume": int}
     # Normally the app finds speakers by SSDP multicast and these stay
     # empty. They only matter when the Sonos speakers are on a different

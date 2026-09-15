@@ -210,7 +210,8 @@ def system_snapshot():
         lines.append(f"  (couldn't list: {type(e).__name__}: {e})")
 
     lines.append(f"Config: local_delay_ms={config.get('local_delay_ms')} "
-                 f"http_port={config.get('http_port')}")
+                 f"http_port={config.get('http_port')} "
+                 f"sonos_stream_quality={config.get('sonos_stream_quality', 'full')}")
     try:
         from config import PASSWORD_PATH
         # report only whether it's set, never the value

@@ -17,6 +17,7 @@ tune local_delay_ms until they land together.
 """
 
 import audioop
+import math
 import queue
 import socket
 import sys
@@ -41,6 +42,14 @@ class Broadcaster:
         self._subs = {}
         self._next_id = 0
         self._lock = threading.Lock()
+        # 0-100 meter reading of the last published chunk, for the
+        # dashboard's live level indicator. Computed here rather than in
+        # each capture loop so every capture mode (whole-system, per-app)
+        # gets it for free from the one point they all already funnel
+        # through -- no lock needed, a single float assignment is atomic
+        # under the GIL and this is a best-effort UI reading, not
+        # something anything downstream depends on being exact.
+        self.level_pct = 0.0
 
     def subscribe(self, maxlen=200):
         q = queue.Queue(maxsize=maxlen)
@@ -55,6 +64,7 @@ class Broadcaster:
             self._subs.pop(sid, None)
 
     def publish(self, chunk):
+        self._update_level(chunk)
         with self._lock:
             subs = list(self._subs.items())
         for sid, q in subs:
@@ -68,6 +78,21 @@ class Broadcaster:
                     q.put_nowait(chunk)
                 except Exception:
                     pass
+
+    def _update_level(self, chunk):
+        """RMS loudness of this chunk as a 0-100 meter reading. -50dBFS
+        (quiet) maps to 0, 0dBFS (full scale) maps to 100 -- audio level
+        is perceived logarithmically, so this reads far more like a real
+        VU meter than a linear amplitude scale would."""
+        try:
+            rms = audioop.rms(chunk, 2)  # 2 = 16-bit PCM, the only format used anywhere in this app
+        except Exception:
+            rms = 0
+        if rms <= 0:
+            self.level_pct = 0.0
+            return
+        dbfs = 20 * math.log10(rms / 32768.0)
+        self.level_pct = max(0.0, min(100.0, (dbfs + 50.0) * 2.0))
 
 
 broadcaster = Broadcaster()
