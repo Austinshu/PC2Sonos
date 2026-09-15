@@ -20,6 +20,15 @@ streaming tool" combo with one thing that just runs at startup:
 - A volume boost for a quiet aux/line-out PC speaker, independent of
   Windows' own volume (which only controls what gets captured, not what
   that device plays back).
+- A dashboard that shows what's actually happening at a glance --
+  how many speakers are streaming, your current sync delay, which PC
+  output device is active, and a live input level meter -- instead of
+  just a settings form you have to read to know anything's working.
+- A one-click sleep timer: pick a duration and every streaming Sonos
+  speaker turns itself off when it runs out, without touching your PC
+  speakers or needing you to remember.
+- A reduced-bandwidth streaming option for a Sonos speaker on a weak or
+  distant Wi-Fi link, independent of your PC speakers' quality.
 - Checks once per launch whether a newer version exists and shows a
   download link if so -- see "Why the update checker exists" below.
 - Starts automatically when you log into Windows. No app to remember to
@@ -149,6 +158,40 @@ stress or damage underpowered speakers/amps over time, not just change
 how the audio sounds. Adjusting past the defaults is at your own risk to
 your hardware.
 
+### Optional: turn everything down at once
+
+The **master volume** slider on the Sonos speakers card scales every
+enabled speaker's volume and the PC boost together, from wherever each
+one is currently set. It's relative, not absolute: drag it to 50% and
+everything drops by half; drag it back to 100% and you get back exactly
+what you started with, not just whatever the last press happened to
+leave behind. Handy for a quick "turn it all down" moment without losing
+track of each speaker's individual level -- the per-speaker sliders
+below stay fully adjustable the whole time. Once you're back at 100%,
+that becomes the new baseline for the next time you use it.
+
+### Optional: sleep timer
+
+Click the **Sleep timer** card, pick a duration (15-90 minutes), and hit
+**Start** -- every currently-streaming Sonos speaker turns itself off
+when the countdown reaches zero, the same as flipping its toggle off by
+hand. Only Sonos is affected; your PC's own speakers, and anything you
+turn back on afterward, are untouched. **Cancel** stops the countdown
+early. The timer lives only in the running app and doesn't survive a
+restart -- it's a "falling asleep to a podcast" tool, not a schedule.
+
+### Optional: reduce Sonos bandwidth on a weak Wi-Fi link
+
+If a Sonos speaker is on a flaky or distant Wi-Fi connection and its
+playback keeps cutting in and out, try **Reduced bandwidth** in the
+**Sonos streaming quality** card. It halves the sample rate sent to
+Sonos (44.1kHz -> 22kHz) -- meaningfully less data for a weak link to
+keep up with, at the cost of slightly less crisp highs. This only
+changes what's sent to Sonos; your PC's own speakers always stay at full
+quality. Switching it forces every currently-streaming speaker to
+reconnect at the new rate (the same brief reconnect blip as switching
+capture modes), so expect one short glitch right after you change it.
+
 ### Optional: start faster after a reboot
 
 Normally PC2Sonos runs a network scan at startup to find your speakers,
@@ -208,10 +251,21 @@ plays a delayed copy to the Mac's own speakers and streams to Sonos.
   PyAudio-shaped interface the Windows build uses (`audio_backend.py`), so
   `audio_engine.py` and `calibration.py` are shared unchanged.
 - **Permissions:** macOS treats reading from BlackHole as *microphone*
-  access. The app asks for it on launch (`macos_app.py`); without it
-  CoreAudio delivers silence with no error, so the dashboard shows a
-  banner if the permission is missing, with a button to the right
-  settings pane.
+  access -- there's no separate "virtual audio input" permission, so the
+  Microphone privacy indicator stays lit the entire time PC2Sonos runs,
+  the same as any other Mac app that routes system audio through a
+  virtual device (Loopback, Audio Hijack, etc). That indicator does
+  *not* mean your actual mic/room audio is being captured -- BlackHole
+  only ever carries your Mac's own audio. The one thing that does touch
+  your real microphone is the optional "Calibrate with test tone" button
+  on the dashboard, a manual, ~6-second recording, off by default (the
+  default Auto calibration measures Sonos's own playback clock instead
+  and never touches the mic at all). The app asks for the permission on
+  launch (`macos_app.py`); without it CoreAudio delivers silence with no
+  error, so the dashboard shows a banner explaining that -- and keeps
+  showing a calmer one afterward, explaining what the indicator means,
+  since granted-and-working is not the same as nothing left worth
+  saying.
 - **Startup:** a LaunchAgent (from `install.sh`) or a Login Items entry
   (from the .app's menu bar item) instead of a Startup-folder shortcut.
 - **Not available on macOS:** per-application capture. The "Audio source"
