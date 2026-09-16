@@ -190,13 +190,16 @@ STYLE_BLOCK = """
   .level-track { background:#333; border-radius:99px; height:10px; margin-top:3px; overflow:hidden; }
   .level-fill { background:#1db954; height:100%; width:0%; border-radius:99px; transition:width .12s linear; }
 
-  /* tile grid: every card is roughly the same size, wrapping like a
-     dashboard instead of stacking in one or two long columns. Speakers
-     gets .card-wide (2 tracks) since it holds a variable-length list;
-     everything else is a uniform tile. Collapses to a single column
-     below the media query near the bottom of this block. */
+  /* tile grid for the smaller/uniform-height cards, wrapping like a
+     dashboard instead of stacking in one long column. Speakers is
+     deliberately NOT part of this grid -- it holds a variable-length
+     list and used to share a row with short cards like "PC speaker
+     output", and since a CSS grid row's height is set by its tallest
+     cell, that stranded the short ones with a big empty gap below their
+     own content. Standing on its own above the grid, its height only
+     ever affects itself. Collapses to a single column below the media
+     query near the bottom of this block. */
   .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:14px; align-items:start; }
-  .card-wide { grid-column:span 2; }
 
   .card {
     background:#1a1a1a; border:1px solid #262626; border-radius:12px;
@@ -384,9 +387,7 @@ DASHBOARD_HTML = """
   </div>
 </div>
 
-<div class="grid">
-
-<div class="card card-wide">
+<div class="card" style="margin-bottom:14px;">
   <div class="card-header">
     <span class="card-icon"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="2,9 6,9 11,4 11,20 6,15 2,15"/><path d="M15 8 A 6 6 0 0 1 15 16" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M18.5 4.5 A 11 11 0 0 1 18.5 19.5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" opacity=".55"/></svg></span>
     <span class="card-title">Sonos speakers</span>
@@ -435,6 +436,8 @@ DASHBOARD_HTML = """
     </div>
   </details>
 </div>
+
+<div class="grid">
 
 <div class="card">
   <div class="card-header">
