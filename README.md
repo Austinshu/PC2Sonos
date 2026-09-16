@@ -186,17 +186,19 @@ stress or damage underpowered speakers/amps over time, not just change
 how the audio sounds. Adjusting past the defaults is at your own risk to
 your hardware.
 
-### Optional: turn everything down at once
+### Optional: scale everything up or down at once
 
 The **master volume** slider on the Sonos speakers card scales every
 enabled speaker's volume and the PC boost together, from wherever each
 one is currently set. It's relative, not absolute: drag it to 50% and
-everything drops by half; drag it back to 100% and you get back exactly
-what you started with, not just whatever the last press happened to
-leave behind. Handy for a quick "turn it all down" moment without losing
-track of each speaker's individual level -- the per-speaker sliders
-below stay fully adjustable the whole time. Once you're back at 100%,
-that becomes the new baseline for the next time you use it.
+everything drops by half; drag it to 150% and everything goes up by
+half (up to the same 500% ceiling as the PC boost slider); drag it back
+to 100% and you get back exactly what you started with, not just
+whatever the last press happened to leave behind. Handy for a quick
+"turn it all down" (or up) moment without losing track of each
+speaker's individual level -- the per-speaker sliders below stay fully
+adjustable the whole time. Once you're back at 100%, that becomes the
+new baseline for the next time you use it.
 
 ### Optional: sleep timer
 
