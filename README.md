@@ -50,6 +50,34 @@ lags behind, so you hear the same audio twice. PC2Sonos holds your local
 speaker output back by a matching amount so both play together -- same
 idea as the "audio delay" / lip-sync offset setting on an AV receiver.
 
+## Why Windows shows PC2Sonos using your microphone
+
+PC2Sonos captures your PC's audio by reading from VB-Audio Virtual
+Cable's "CABLE Output" -- a virtual recording device, not a real
+microphone. Windows has no separate permission category for that,
+though: any app that opens *any* input-class device for capture, real
+mic or virtual, is gated behind the same "Microphone" privacy
+permission, and Windows considers that access ongoing for as long as
+the connection is open -- which for PC2Sonos is the entire time it's
+running, not just for a moment. That's also why you may see PC2Sonos
+listed under Settings > Privacy & Security > Microphone as an app
+that's used it.
+
+Nothing about your room or your voice is ever captured through this
+path -- it only ever carries your PC's own audio, redirected through
+the virtual cable on its way to Sonos. The one thing that *does*
+briefly use a real microphone is the optional "Calibrate with test
+tone" button on the dashboard: a manual, ~6-second recording, off by
+default (the default Auto calibration measures Sonos's own playback
+clock instead and never touches a microphone, real or virtual, at
+all).
+
+There's no way around holding the permission continuously while using
+this architecture -- revoking it (or Windows' "Let desktop apps access
+your microphone" master switch) silences PC2Sonos entirely, the same
+way denying the equivalent macOS permission does, for the same
+underlying reason (see the macOS section below).
+
 ## Why the update checker exists
 
 The early releases of PC2Sonos were, honestly, not good at the one thing
