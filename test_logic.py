@@ -209,10 +209,12 @@ try:
 
     r = client.post("/api/master_volume", json={"percent": 999})  # clamps to 500, doesn't error
     assert r.status_code == 200 and r.get_json()["ok"] is True
-    assert r.get_json()["local_gain_percent"] == 500, \
-        "999% should clamp to the same 500% ceiling as the boost slider"
     assert webapp.config["speakers"]["MV_ON"]["volume"] == 100, \
-        "scaling by 500% should still clamp an individual speaker's volume to 100"
+        "scaling a Sonos speaker up by 500% should still clamp its volume to 100"
+    assert r.get_json()["local_gain_percent"] == 200, \
+        "scaling UP must never touch the PC boost -- it should stay at its 200% baseline, " \
+        "not also get multiplied by 5x (that exact compounding pushed a real boost to " \
+        "its ceiling from a single master-volume press)"
 finally:
     del webapp.speaker_mgr.speakers["MV_ON"]
     del webapp.speaker_mgr.speakers["MV_OFF"]

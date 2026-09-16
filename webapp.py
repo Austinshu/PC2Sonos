@@ -401,7 +401,7 @@ DASHBOARD_HTML = """
     <label style="margin-bottom:6px;">Scale everything together</label>
     <details class="info-toggle">
       <summary>&#9432; How does this work?</summary>
-      <div class="card-desc">Scales every enabled Sonos speaker and the PC boost from wherever they're each set right now (individual volumes below stay fully adjustable afterward). 100% is a no-op; below it turns everything down together, above it boosts everything together, up to the same 500% ceiling as the PC speaker boost slider (each Sonos speaker's own volume still can't go past 100% -- that's a Sonos limit, not this control's).</div>
+      <div class="card-desc">Scales every enabled Sonos speaker and the PC boost from wherever they're each set right now (individual volumes below stay fully adjustable afterward). 100% is a no-op. Below 100% turns everything down together, including the PC boost. Above 100% turns Sonos speakers up together (up to 100% each, a Sonos limit) -- but never the PC boost, which only ever moves down through this control. Raising the PC boost itself always needs the dedicated slider below, since that one carries its own hardware-risk warning that this control shouldn't be able to trigger as a side effect.</div>
     </details>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <input type="range" min="0" max="500" step="1" id="masterVolume" value="100"
@@ -1252,11 +1252,19 @@ def api_master_volume():
     up. Moving the slider back to 100 restores the baseline exactly, and
     that restored state becomes the new baseline for next time.
 
-    0-500%, matching the PC boost slider's own range -- this can push
-    the boost above what was previously set (the point of a "boost
-    everything" control), but never past that same 500% ceiling either
-    slider enforces on its own, and each Sonos speaker's volume is still
-    clamped to 100% by speaker_mgr.set_volume regardless of scale."""
+    0-500% for Sonos speakers -- no hardware risk there, Sonos enforces
+    its own 100% ceiling per speaker regardless of scale. The PC boost
+    is different: it carries its own hardware-risk warning specifically
+    because a user has to deliberately drag IT to go past 100%, and
+    letting THIS control also push it upward defeats that -- a boost
+    already sitting elevated (say 150%, previously set on purpose) times
+    an innocuous-looking "turn everything up to 200%" here would
+    silently land at 300%, nowhere near either slider's own displayed
+    number. Confirmed directly: exactly this compounding pushed a real
+    boost to its 500% ceiling from a single master-volume press. So the
+    boost only ever scales DOWN through this control (capped at its
+    baseline, never above); turning it up still requires the dedicated
+    slider."""
     global _master_volume_baseline
     data = request.get_json(force=True)
     percent = max(0, min(500, int(data.get("percent", 100))))
@@ -1269,9 +1277,10 @@ def api_master_volume():
             }
 
         scale = percent / 100.0
+        gain_scale = min(1.0, scale)  # boost: down only, never boosted BY this control
         for uid, base_volume in _master_volume_baseline["speakers"].items():
             speaker_mgr.set_volume(uid, round(base_volume * scale))
-        new_gain_percent = max(0, min(500, round(_master_volume_baseline["local_gain_percent"] * scale)))
+        new_gain_percent = max(0, min(500, round(_master_volume_baseline["local_gain_percent"] * gain_scale)))
         config["local_render_gain"] = new_gain_percent / 100.0
         save_config(config)
 
