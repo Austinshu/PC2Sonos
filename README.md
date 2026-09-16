@@ -191,13 +191,18 @@ your hardware.
 The **master volume** slider on the Sonos speakers card scales every
 enabled speaker's volume and the PC boost together, from wherever each
 one is currently set. It's relative, not absolute: drag it to 50% and
-everything drops by half; drag it to 150% and everything goes up by
-half (up to the same 500% ceiling as the PC boost slider); drag it back
-to 100% and you get back exactly what you started with, not just
-whatever the last press happened to leave behind. Handy for a quick
-"turn it all down" (or up) moment without losing track of each
-speaker's individual level -- the per-speaker sliders below stay fully
-adjustable the whole time. Once you're back at 100%, that becomes the
+everything drops by half, PC boost included; drag it back to 100% and
+you get back exactly what you started with, not just whatever the last
+press happened to leave behind. Above 100% turns your Sonos speakers up
+together (up to 100% each, same as always) -- but deliberately **not**
+the PC boost, which only ever moves down through this slider. Raising
+the boost itself still needs its own dedicated slider below, since that
+one carries a hardware-risk warning this control shouldn't be able to
+trigger as a side effect of an innocuous "turn everything up" press.
+Handy for a quick "turn it all down" (or Sonos up) moment without
+losing track of each speaker's individual level -- the per-speaker
+sliders below stay fully adjustable the whole time. Once you're back at
+100%, that becomes the
 new baseline for the next time you use it.
 
 ### Optional: sleep timer
