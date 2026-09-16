@@ -207,8 +207,12 @@ try:
         "a disabled speaker must be left untouched by master volume"
     assert webapp.config["local_render_gain"] == 1.0, "the PC boost should scale by the same percentage"
 
-    r = client.post("/api/master_volume", json={"percent": 999})  # clamps to 100, doesn't error
+    r = client.post("/api/master_volume", json={"percent": 999})  # clamps to 500, doesn't error
     assert r.status_code == 200 and r.get_json()["ok"] is True
+    assert r.get_json()["local_gain_percent"] == 500, \
+        "999% should clamp to the same 500% ceiling as the boost slider"
+    assert webapp.config["speakers"]["MV_ON"]["volume"] == 100, \
+        "scaling by 500% should still clamp an individual speaker's volume to 100"
 finally:
     del webapp.speaker_mgr.speakers["MV_ON"]
     del webapp.speaker_mgr.speakers["MV_OFF"]

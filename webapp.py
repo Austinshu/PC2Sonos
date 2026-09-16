@@ -38,6 +38,15 @@ _pw_cache = (None, None)
 # moment becomes the new baseline for the next press, instead of scaling
 # relative to itself and drifting further from the real values every time.
 _master_volume_baseline = None
+# Flask's dev server runs threaded=True (real OS threads), so two
+# requests to /api/master_volume close together -- e.g. a slider firing
+# on release right as a previous drag's request is still in flight --
+# can otherwise both see baseline as None and each capture their own
+# snapshot, or one can clear it while the other is still mid-calculation.
+# Observed directly while testing: two quick presses left the PC boost
+# scaled from the wrong baseline. Guards the whole read-baseline/scale/
+# maybe-clear sequence in api_master_volume as one atomic step.
+_master_volume_lock = threading.Lock()
 
 # Sleep timer: {"deadline": monotonic_time, "timer": threading.Timer} while
 # armed, None otherwise. Session-only like the baseline above -- a timer
@@ -389,16 +398,16 @@ DASHBOARD_HTML = """
     a network scan finishes. Click a star to set it.</div>
   </details>
   <div style="padding:10px 0 12px; border-bottom:1px solid #232323; margin-bottom:4px;">
-    <label style="margin-bottom:6px;">Turn everything down together</label>
+    <label style="margin-bottom:6px;">Scale everything together</label>
     <details class="info-toggle">
       <summary>&#9432; How does this work?</summary>
-      <div class="card-desc">Scales every enabled Sonos speaker and the PC boost from wherever they're each set right now (individual volumes below stay fully adjustable afterward).</div>
+      <div class="card-desc">Scales every enabled Sonos speaker and the PC boost from wherever they're each set right now (individual volumes below stay fully adjustable afterward). 100% is a no-op; below it turns everything down together, above it boosts everything together, up to the same 500% ceiling as the PC speaker boost slider (each Sonos speaker's own volume still can't go past 100% -- that's a Sonos limit, not this control's).</div>
     </details>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-      <input type="range" min="0" max="100" step="1" id="masterVolume" value="100"
+      <input type="range" min="0" max="500" step="1" id="masterVolume" value="100"
              oninput="document.getElementById('masterVolumeNum').value = this.value; paintRange(this)"
              onchange="applyMasterVolume()" style="flex:1; min-width:150px;">
-      <input type="number" min="0" max="100" step="1" id="masterVolumeNum" value="100"
+      <input type="number" min="0" max="500" step="1" id="masterVolumeNum" value="100"
              oninput="const s=document.getElementById('masterVolume'); s.value=this.value; paintRange(s)"
              onchange="applyMasterVolume()"
              style="width:60px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:8px;">
@@ -1242,28 +1251,32 @@ def api_master_volume():
     not back to the first 50%) and can never be undone by sliding back
     up. Moving the slider back to 100 restores the baseline exactly, and
     that restored state becomes the new baseline for next time.
-    Deliberately one-directional (0-100%, never boosts past what's
-    already configured) so this can never push the PC boost past a
-    level the user hasn't already explicitly approved."""
+
+    0-500%, matching the PC boost slider's own range -- this can push
+    the boost above what was previously set (the point of a "boost
+    everything" control), but never past that same 500% ceiling either
+    slider enforces on its own, and each Sonos speaker's volume is still
+    clamped to 100% by speaker_mgr.set_volume regardless of scale."""
     global _master_volume_baseline
     data = request.get_json(force=True)
-    percent = max(0, min(100, int(data.get("percent", 100))))
+    percent = max(0, min(500, int(data.get("percent", 100))))
 
-    if _master_volume_baseline is None:
-        _master_volume_baseline = {
-            "speakers": {s["uid"]: s["volume"] for s in speaker_mgr.list() if s["enabled"]},
-            "local_gain_percent": round(config.get("local_render_gain", 1.0) * 100),
-        }
+    with _master_volume_lock:
+        if _master_volume_baseline is None:
+            _master_volume_baseline = {
+                "speakers": {s["uid"]: s["volume"] for s in speaker_mgr.list() if s["enabled"]},
+                "local_gain_percent": round(config.get("local_render_gain", 1.0) * 100),
+            }
 
-    scale = percent / 100.0
-    for uid, base_volume in _master_volume_baseline["speakers"].items():
-        speaker_mgr.set_volume(uid, round(base_volume * scale))
-    new_gain_percent = round(_master_volume_baseline["local_gain_percent"] * scale)
-    config["local_render_gain"] = new_gain_percent / 100.0
-    save_config(config)
+        scale = percent / 100.0
+        for uid, base_volume in _master_volume_baseline["speakers"].items():
+            speaker_mgr.set_volume(uid, round(base_volume * scale))
+        new_gain_percent = max(0, min(500, round(_master_volume_baseline["local_gain_percent"] * scale)))
+        config["local_render_gain"] = new_gain_percent / 100.0
+        save_config(config)
 
-    if percent == 100:
-        _master_volume_baseline = None
+        if percent == 100:
+            _master_volume_baseline = None
 
     return jsonify({"ok": True, "local_gain_percent": new_gain_percent})
 
