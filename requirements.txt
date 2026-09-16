@@ -10,6 +10,7 @@ numpy
 pyaudiowpatch; sys_platform == "win32"
 pycaw; sys_platform == "win32"
 comtypes; sys_platform == "win32"
+winsdk; sys_platform == "win32"
 # macOS audio stack: PortAudio over CoreAudio (audio_backend.py) and the
 # AVFoundation binding used to request audio-input permission (macos_app.py).
 sounddevice; sys_platform == "darwin"

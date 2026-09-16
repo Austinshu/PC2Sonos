@@ -20,16 +20,22 @@ soco_config.REQUEST_TIMEOUT = 4.0
 # How long a single Sonos stream connection is allowed to run before the
 # watchdog silently reconnects it. Our own outgoing queue is bounded to a
 # ~200ms drift guard (see webapp.stream_wav), but that says nothing about
-# whatever Sonos does internally to a connection that's been open for
-# hours -- calibration on a long-running session has measured playback
+# whatever Sonos does internally to a connection that's been open for a
+# while -- calibration on a long-running session has measured playback
 # delay creeping up well past that (641ms, then 911, 1090, 1270ms on the
-# same otherwise-idle system) with no code-side cause. A full app restart
-# is the only thing observed to reset it back to a clean sync, because
-# that forces Sonos to open a brand new connection -- so periodically
-# forcing that same reconnect ourselves gets the same reset without
-# requiring the user to actually close and reopen the app. The tradeoff
-# is a brief (~1s) audible blip while Sonos re-buffers.
-RESYNC_INTERVAL_SECONDS = 2 * 3600
+# same otherwise-idle system) with no code-side cause, and separately,
+# real playback dropouts have been observed to stop recurring right after
+# a full app restart. A full restart is the most drastic way to force
+# Sonos to open a brand new connection -- periodically forcing that same
+# reconnect ourselves gets the same reset without requiring the user to
+# actually close and reopen the app. Was 2 hours; shortened after a
+# session kept developing dropouts well before the 2-hour mark, on the
+# theory that whatever degrades over a long-lived connection was starting
+# to matter sooner than that. The tradeoff is a brief (~1s) audible blip
+# each time it fires -- 10 minutes means about 6 of those an hour, so if
+# dropouts stop but this feels like too many blips, this is the number to
+# raise back up.
+RESYNC_INTERVAL_SECONDS = 10 * 60
 
 
 def _track_metadata(title):
@@ -55,6 +61,25 @@ def _track_metadata(title):
         "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
         "</item></DIDL-Lite>"
     )
+
+
+def _current_track_title():
+    """Best-effort title for a stream that's about to (re)start --
+    Windows' own "Now Playing" info if something's actively playing,
+    else the generic fallback. Deliberately only ever read at moments a
+    reconnect is ALREADY happening (boot, resync, manual toggle): once a
+    Sonos connection is open there's no way to update its title without
+    reconnecting (see webapp.stream_wav's WAV header), so this never
+    triggers an extra reconnect on its own -- it just makes the
+    reconnects that were already going to happen show something real."""
+    try:
+        from now_playing import get_now_playing
+        info = get_now_playing()
+        if info and info.get("playing") and info.get("title"):
+            return info["title"]
+    except Exception:
+        pass
+    return "PC Audio"
 
 
 def _reltime_to_seconds(s):
@@ -166,6 +191,19 @@ class SpeakerManager:
         # watchdog can't get into a rapid-fire restart fight with a user
         # who is deliberately stopping playback on the speaker itself
         self._last_auto_restart = {}
+        # uid -> monotonic time of the last REAL dropout restart (state
+        # went STOPPED/PAUSED unexpectedly) and a running count for this
+        # session -- deliberately separate from _last_auto_restart, which
+        # also gets touched by the routine periodic resync (see
+        # RESYNC_INTERVAL_SECONDS): that's scheduled maintenance, not a
+        # problem, and mixing the two into one number would make the
+        # dashboard's connection-health display claim a "dropout" every
+        # time the healthy, scheduled resync fires. Session-only (not
+        # persisted) -- a history that survived a restart would be
+        # confusing after the exact kind of restart that's supposed to
+        # give you a clean slate.
+        self._last_dropout = {}
+        self._dropout_count = {}
         # speakers we've done the boot-time force-start on (or that got
         # a manual dashboard start, which counts)
         self._boot_started = set()
@@ -423,6 +461,14 @@ class SpeakerManager:
                     # (see _effective_zone), so the UI shouldn't imply
                     # otherwise
                     "grouped_with": self.groups.get(uid, []),
+                    # connection-health, for the dashboard -- see the
+                    # comment on self._last_dropout for why this is kept
+                    # separate from the routine periodic resync
+                    "dropout_count": self._dropout_count.get(uid, 0),
+                    "last_dropout_seconds_ago": (
+                        int(time.monotonic() - self._last_dropout[uid])
+                        if uid in self._last_dropout else None
+                    ),
                 })
             return sorted(out, key=lambda s: s["name"])
 
@@ -480,7 +526,7 @@ class SpeakerManager:
         self._last_auto_restart[uid] = time.monotonic()
         try:
             url = f"{base_url}/stream/{uid}.wav"
-            _effective_zone(zone).play_uri(url, meta=_track_metadata("PC Audio"))
+            _effective_zone(zone).play_uri(url, meta=_track_metadata(_current_track_title()))
             self.streams[uid] = True
             print(f"[sonos] streaming to {zone.player_name}")
         except Exception as e:
@@ -606,6 +652,8 @@ class SpeakerManager:
                 now = time.monotonic()
                 if now - self._last_auto_restart.get(uid, 0) >= 45:
                     self._last_auto_restart[uid] = now
+                    self._last_dropout[uid] = now
+                    self._dropout_count[uid] = self._dropout_count.get(uid, 0) + 1
                     print(f"[sonos] watchdog: {zone.player_name} stopped "
                           f"(state={state}); restarting stream")
                     self.start_stream(uid, zone, base_url)

@@ -340,6 +340,7 @@ DASHBOARD_HTML = """
     <div>
       <h1>PC2Sonos</h1>
       <div class="sub">Free. Local, no account. Runs at startup.</div>
+      <div id="nowPlayingText" style="display:none; font-size:12px; color:#1db954; margin-top:2px; max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
     </div>
   </div>
   <a href="{{donate_url}}" target="_blank" class="donate-link">&hearts; Support this project</a>
@@ -396,12 +397,12 @@ DASHBOARD_HTML = """
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <input type="range" min="0" max="100" step="1" id="masterVolume" value="100"
              oninput="document.getElementById('masterVolumeNum').value = this.value; paintRange(this)"
-             style="flex:1; min-width:150px;">
+             onchange="applyMasterVolume()" style="flex:1; min-width:150px;">
       <input type="number" min="0" max="100" step="1" id="masterVolumeNum" value="100"
              oninput="const s=document.getElementById('masterVolume'); s.value=this.value; paintRange(s)"
+             onchange="applyMasterVolume()"
              style="width:60px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:8px;">
       <span>%</span>
-      <button onclick="applyMasterVolume()">Apply</button>
     </div>
     <div id="masterVolumeResult" style="margin-top:6px; font-size:12px; color:#888;"></div>
   </div>
@@ -462,12 +463,11 @@ DASHBOARD_HTML = """
   <div class="card-desc">Raise until your PC speakers and Sonos play together, with no echo.</div>
   <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
     <input type="range" min="0" max="4000" step="1" id="delay" value="{{delay}}"
-           oninput="syncDelay('slider')" style="flex:1; min-width:150px;">
+           oninput="syncDelay('slider')" onchange="setDelay()" style="flex:1; min-width:150px;">
     <input type="number" min="0" max="4000" step="1" id="delayNum" value="{{delay}}"
-           oninput="syncDelay('number')"
+           oninput="syncDelay('number')" onchange="setDelay()"
            style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
     <span>ms</span>
-    <button onclick="setDelay()">Apply</button>
     <button onclick="autoCalibrate('silent')" class="btn-blue">Auto</button>
   </div>
   <div id="calibResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
@@ -510,12 +510,11 @@ DASHBOARD_HTML = """
       </details>
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <input type="range" min="0" max="500" step="1" id="localGain" value="{{local_gain_percent}}"
-               oninput="syncLocalGain('slider')" style="flex:1; min-width:150px;">
+               oninput="syncLocalGain('slider')" onchange="setLocalGain()" style="flex:1; min-width:150px;">
         <input type="number" min="0" max="500" step="1" id="localGainNum" value="{{local_gain_percent}}"
-               oninput="syncLocalGain('number')"
+               oninput="syncLocalGain('number')" onchange="setLocalGain()"
                style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
         <span>%</span>
-        <button onclick="setLocalGain()">Apply</button>
       </div>
       <div style="font-size:11px; color:#777; margin-top:6px;">
         100% = unchanged passthrough (the original behavior). Above 100% amplifies the signal with a soft limiter -- loud peaks compress gradually instead of clipping, so it stays clean well past 100%.
@@ -641,6 +640,12 @@ DASHBOARD_HTML = """
 </div>
 
 <script>
+function formatAgo(seconds){
+  if (seconds === null || seconds === undefined) return 'unknown';
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+  return Math.floor(seconds / 3600) + 'h ago';
+}
 function paintRange(el){
   // colors the track up to the current value, so the slider shows
   // progress at a glance instead of a bare thumb on a flat bar -- only
@@ -674,6 +679,9 @@ async function refresh(){
     const grouped = s.grouped_with && s.grouped_with.length;
     const star = s.is_default ? '&#9733;' : '&#9734;';
     const starTitle = s.is_default ? 'Default speaker (click to unset)' : 'Set as default speaker';
+    const health = s.dropout_count > 0
+      ? `<span style="flex-basis:100%; font-size:11px; color:#888;">&#9888; ${s.dropout_count} dropout${s.dropout_count === 1 ? '' : 's'} this session &mdash; last ${formatAgo(s.last_dropout_seconds_ago)}</span>`
+      : '';
     div.innerHTML = `
       <span onclick="setDefault('${s.uid}', ${s.is_default})" title="${starTitle}"
             style="cursor:pointer; font-size:16px; color:${s.is_default ? '#f5c518' : '#666'};">${star}</span>
@@ -687,6 +695,7 @@ async function refresh(){
              onchange="setVol('${s.uid}', this.value)">
       <span style="width:36px; display:inline-block;">${s.volume}%</span>
       <span class="status ${s.streaming ? 'on' : 'off'}">${s.streaming ? 'streaming' : 'idle'}</span>
+      ${health}
     `;
     el.appendChild(div);
   });
@@ -978,7 +987,7 @@ async function checkPlatform(){
       // real and needs an explanation, not silence, or it just looks
       // like the app is spying (see webapp.api_platform_status)
       banner.classList.add('banner-info');
-      text.textContent = "macOS may show a Microphone indicator the whole time PC2Sonos runs -- that's expected, not a bug: reading from BlackHole (the virtual audio device this app streams your system audio through) counts as \"Microphone\" access to macOS, even though BlackHole only ever carries your Mac's own audio, never your room or your voice. Your real microphone is only ever touched if you press \"Calibrate with test tone\" on the dashboard, which is optional, and listens for about 6 seconds.";
+      text.textContent = `macOS may show a Microphone indicator the whole time PC2Sonos runs -- that's expected, not a bug: reading from BlackHole (the virtual audio device this app streams your system audio through) counts as "Microphone" access to macOS, even though BlackHole only ever carries your Mac's own audio, never your room or your voice. Your real microphone is only ever touched if you press "Calibrate with test tone" on the dashboard, which is optional, and listens for about 6 seconds.`;
       btn.style.display = 'none';
       banner.style.display = 'block';
     }
@@ -1083,12 +1092,24 @@ async function loadSleepTimer(){
   const data = await res.json();
   armSleepCountdown(data.active ? data.remaining_seconds : null);
 }
+async function loadNowPlaying(){
+  const el = document.getElementById('nowPlayingText');
+  try {
+    const res = await fetch('/api/now_playing');
+    const data = await res.json();
+    if (!data.available || !data.playing) { el.style.display = 'none'; return; }
+    el.textContent = '♪ Now playing: ' + data.title + (data.artist ? ' — ' + data.artist : '');
+    el.style.display = 'block';
+  } catch (e) { el.style.display = 'none'; }
+}
 refresh();
 loadDevices();
 loadAudioSessions();
 loadSeedIps();
 loadStreamQuality();
 loadSleepTimer();
+loadNowPlaying();
+setInterval(loadNowPlaying, 4000);
 checkDonatePrompt();
 checkUpdate();
 checkPlatform();
@@ -1255,6 +1276,22 @@ def api_level():
     poll interval), so this must stay cheap: just reads an already-
     computed float, no audio work happens on this request."""
     return jsonify({"level": round(broadcaster.level_pct, 1)})
+
+
+@app.route("/api/now_playing")
+def api_now_playing():
+    """What Windows itself currently shows as "now playing" (taskbar/
+    lock-screen media controls) -- Windows-only, see now_playing.py for
+    why this can't work the same way on macOS. This is a query, not a
+    guarantee of what's actually going to Sonos right now (e.g. in per-
+    app capture mode the selected app and the system's media session
+    aren't necessarily the same thing) -- it's a convenience display,
+    not a claim about the stream's exact contents."""
+    from now_playing import get_now_playing
+    info = get_now_playing()
+    if info is None:
+        return jsonify({"available": False})
+    return jsonify({"available": True, **info})
 
 
 @app.route("/api/sleep_timer", methods=["GET", "POST"])
