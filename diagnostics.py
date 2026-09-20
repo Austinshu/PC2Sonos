@@ -186,6 +186,18 @@ def system_snapshot():
             lines.append(f"  loopback fell back to the recording device: {cap['fallback_reason']}")
     except Exception as e:
         lines.append(f"Audio capture: couldn't check ({type(e).__name__}: {e})")
+    try:
+        from audio_engine import get_scheduling_status
+        sched = get_scheduling_status()
+        if sched["throttling_opt_out"] is None:
+            lines.append("Audio scheduling: not applicable on this platform (or the audio engine hasn't started)")
+        else:
+            lines.append(f"Audio scheduling: Windows background-throttling opt-out "
+                         f"{'on' if sched['throttling_opt_out'] else 'UNAVAILABLE'}, "
+                         f"1ms timer {'on' if sched['timer_1ms'] else 'UNAVAILABLE'}, "
+                         f"{sched['mmcss_threads']} audio thread(s) registered with the multimedia scheduler")
+    except Exception as e:
+        lines.append(f"Audio scheduling: couldn't check ({type(e).__name__}: {e})")
 
     lines.append("Output devices seen by PC2Sonos:")
     try:

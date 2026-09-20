@@ -262,12 +262,98 @@ def get_lan_ip():
     return "127.0.0.1"
 
 
+_scheduling_status = {"throttling_opt_out": None, "timer_1ms": None, "mmcss_threads": 0}
+_scheduling_lock = threading.Lock()
+
+
+def _harden_audio_scheduling():
+    """Windows only: stop Windows treating this as the background app it looks
+    like. PC2Sonos has no window, and Windows 11 deprioritises windowless
+    background processes -- runs them on slow efficiency cores and coalesces
+    their timers -- which is fine for most apps and fatal for one that has to
+    finish a chunk of audio every 21ms, forever. On a real PC it made the
+    speaker path run a fraction of a percent slower than real time, so the PC
+    speakers slid further behind the audio every second (and glitched whenever
+    they ran dry), with no window on screen to explain it.
+
+    Three things, all of which audio apps are expected to declare: opt this
+    process out of execution-speed throttling, keep its 1ms timer request
+    honoured even while it is windowless, and ask for that 1ms timer
+    resolution in the first place (the default is 15.6ms, which also makes
+    Windows hand the loopback stream over in uneven bursts -- see
+    _read_loop_loopback). Every step is best-effort: an older Windows without
+    them just carries on as before."""
+    if sys.platform != "win32":
+        return
+    with _scheduling_lock:
+        if _scheduling_status["throttling_opt_out"] is not None:
+            return  # once per process
+        _scheduling_status["throttling_opt_out"] = False
+        _scheduling_status["timer_1ms"] = False
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _PowerThrottling(ctypes.Structure):
+                _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG),
+                            ("StateMask", wintypes.ULONG)]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                       ctypes.c_void_p, wintypes.DWORD]
+            # ProcessPowerThrottling = 4; control both EXECUTION_SPEED (0x1) and
+            # IGNORE_TIMER_RESOLUTION (0x4) and set neither = throttling off
+            state = _PowerThrottling(1, 0x1 | 0x4, 0)
+            _scheduling_status["throttling_opt_out"] = bool(kernel32.SetProcessInformation(
+                kernel32.GetCurrentProcess(), 4, ctypes.byref(state), ctypes.sizeof(state)))
+        except Exception as e:
+            print(f"[audio] couldn't opt out of Windows background throttling: {e}")
+        try:
+            import ctypes
+            _scheduling_status["timer_1ms"] = ctypes.WinDLL("winmm").timeBeginPeriod(1) == 0
+        except Exception as e:
+            print(f"[audio] couldn't request a 1ms timer: {e}")
+    print(f"[audio] scheduling: background throttling opt-out "
+          f"{'on' if _scheduling_status['throttling_opt_out'] else 'unavailable'}, "
+          f"1ms timer {'on' if _scheduling_status['timer_1ms'] else 'unavailable'}")
+
+
+def _register_audio_thread():
+    """Windows only: register the calling thread with the multimedia
+    scheduler as a "Pro Audio" thread, the way any real-time audio thread is
+    meant to (PortAudio does it for its own threads; our capture and render
+    threads are separate Python threads and need it too). It keeps them
+    running on time when the machine is busy. Best-effort, and a no-op
+    anywhere else."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        avrt = ctypes.WinDLL("avrt", use_last_error=True)
+        avrt.AvSetMmThreadCharacteristicsW.restype = wintypes.HANDLE
+        avrt.AvSetMmThreadCharacteristicsW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+        task_index = wintypes.DWORD(0)
+        if avrt.AvSetMmThreadCharacteristicsW("Pro Audio", ctypes.byref(task_index)):
+            with _scheduling_lock:
+                _scheduling_status["mmcss_threads"] += 1
+    except Exception:
+        pass
+
+
+def get_scheduling_status():
+    with _scheduling_lock:
+        return dict(_scheduling_status)
+
+
 def capture_loop(stop_event):
     """Dispatches to whole-system or per-application capture based on
     config['capture_mode'], and re-dispatches every time the underlying
     loop returns (no selected app running yet, or the last one just
     closed) so switching modes or waiting for an app to launch doesn't
     require restarting the thread from outside."""
+    _register_audio_thread()
     while not stop_event.is_set():
         if config.get("capture_mode") == "apps" and config.get("capture_target_names"):
             _capture_loop_apps(stop_event)
@@ -559,6 +645,13 @@ def _pick_loopback_device():
 # before we start feeding the streams silence ourselves, and how often the
 # watcher checks.
 _LOOPBACK_IDLE_GRACE_S = 0.3
+# How often the watcher looks. While audio is flowing, a look every 50ms is
+# plenty to notice the stream going quiet within the grace period above --
+# and every look is a thread wake-up that has to take the interpreter lock
+# off the render loop, so on a busy background process fewer is better.
+# Once it IS idle it is feeding silence in real time and needs the finer
+# tick to keep that on schedule.
+_LOOPBACK_WATCH_BUSY_S = 0.05
 _LOOPBACK_WATCH_S = 0.01
 _LOOPBACK_OPEN_FAILURES_BEFORE_FALLBACK = 3
 
@@ -607,6 +700,7 @@ class _LoopbackReader(threading.Thread):
         self.abandoned = False   # set when nobody is listening any more
 
     def run(self):
+        _register_audio_thread()
         while not self.abandoned and self.errors < 5:
             try:
                 data = self.stream.read(CHUNK, exception_on_overflow=False)
@@ -649,9 +743,11 @@ def _read_loop_loopback(stream, stop_event, rate, channels):
                 while next_silence <= now:
                     broadcaster.publish(silence)
                     next_silence += chunk_seconds
+                nap = _LOOPBACK_WATCH_S
             else:
                 next_silence = None
-            time.sleep(_LOOPBACK_WATCH_S)
+                nap = _LOOPBACK_WATCH_BUSY_S
+            time.sleep(nap)
     finally:
         reader.abandoned = True
         # A healthy reader returns from its current read within ~20ms and
@@ -962,49 +1058,108 @@ def _peaking_coeffs(freq, rate, gain_db, q):
     return b0, b1, b2, a0, a1, a2
 
 
+# How far the EQ's impulse response is followed before it is cut off: never
+# shorter than the minimum, stops as soon as a whole block of it has decayed
+# below the floor (relative to its peak -- ~-180dB, far below what 16-bit
+# audio can even represent), never longer than the maximum. A 200Hz shelf at
+# 48kHz needs on the order of a thousand taps to get there.
+_EQ_IR_MIN_TAPS = 256
+_EQ_IR_MAX_TAPS = 4096
+_EQ_IR_BLOCK = 256
+_EQ_IR_FLOOR = 1e-9
+
+
+def _cascade_impulse_response(coeff_sets):
+    """The response of the given biquads in series to a single unit impulse,
+    computed with exactly the recursion _Biquad runs (direct form I), so the
+    FIR built from it IS the same filter, just evaluated all at once instead
+    of one sample at a time. Cut off where what's left has decayed away --
+    see _EQ_IR_FLOOR. Runs only when the EQ settings change."""
+    sections = [(b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
+                for b0, b1, b2, a0, a1, a2 in coeff_sets]
+    state = [[0.0, 0.0, 0.0, 0.0] for _ in sections]  # x1, x2, y1, y2 per section
+    out = []
+    peak = 0.0
+    while len(out) < _EQ_IR_MAX_TAPS:
+        block = []
+        for i in range(len(out), len(out) + _EQ_IR_BLOCK):
+            x = 1.0 if i == 0 else 0.0
+            for (b0, b1, b2, a1, a2), st in zip(sections, state):
+                y = b0 * x + b1 * st[0] + b2 * st[1] - a1 * st[2] - a2 * st[3]
+                st[1], st[0] = st[0], x
+                st[3], st[2] = st[2], y
+                x = y
+            block.append(x)
+        out.extend(block)
+        tail = max(abs(v) for v in block)
+        peak = max(peak, tail)
+        if len(out) >= _EQ_IR_MIN_TAPS and tail < _EQ_IR_FLOOR * max(peak, 1.0):
+            break
+    return np.array(out, dtype=np.float64)
+
+
 class _ThreeBandEQ:
-    """Bass/mid/treble EQ, one independent filter chain per channel so
-    stereo channels never share (and smear) filter state. Coefficients
-    are only recomputed when the dashboard's settings actually change --
-    not on every chunk -- since that's the only thing that needs to be
-    recalculated; the running filter state (each Biquad's memory of its
-    last two samples) has to persist across chunks for the filter to
-    sound like a continuous EQ rather than clicking every buffer
-    boundary."""
+    """Bass/mid/treble EQ, one independent filter per channel so stereo
+    channels never share (and smear) filter state.
+
+    The three bands are biquads in series. They used to be run one sample at a
+    time in a Python loop -- about 6000 filter steps per 21ms of audio, which
+    on a fast PC is 10% of a core and is exactly what fell behind real time
+    whenever Windows deprioritised the app (it runs windowless in the
+    background): the speakers then slid further and further behind the audio,
+    and the backlog never cleared. The same filter is now evaluated in one go
+    per chunk: the cascade's impulse response is computed once whenever the
+    settings change, and each chunk is convolved with it by FFT (overlap-save,
+    keeping the last few thousand input samples from the previous chunk so
+    the result is continuous across chunk boundaries). It matches the
+    sample-by-sample filter to within a single 16-bit step on real music, and
+    costs about a fifteenth as much."""
 
     def __init__(self, rate, channels):
         self.rate = rate
         self.channels = channels
         self._last = (0.0, 0.0, 0.0)
-        self._bands = [[_Biquad(), _Biquad(), _Biquad()] for _ in range(channels)]
+        self._ir = None
+        self._spectra = {}  # FFT size -> the impulse response's spectrum at that size
+        self._hist = np.zeros((0, channels))
 
     def _update(self, bass_db, mid_db, treble_db):
-        bass_c = _low_shelf_coeffs(_EQ_BASS_HZ, self.rate, bass_db)
-        mid_c = _peaking_coeffs(_EQ_MID_HZ, self.rate, mid_db, _EQ_MID_Q)
-        treble_c = _high_shelf_coeffs(_EQ_TREBLE_HZ, self.rate, treble_db)
-        for chain in self._bands:
-            chain[0].set_coeffs(*bass_c)
-            chain[1].set_coeffs(*mid_c)
-            chain[2].set_coeffs(*treble_c)
+        self._ir = _cascade_impulse_response((
+            _low_shelf_coeffs(_EQ_BASS_HZ, self.rate, bass_db),
+            _peaking_coeffs(_EQ_MID_HZ, self.rate, mid_db, _EQ_MID_Q),
+            _high_shelf_coeffs(_EQ_TREBLE_HZ, self.rate, treble_db)))
+        self._spectra = {}
+        need = len(self._ir) - 1  # input history the new response looks back over
+        if len(self._hist) < need:
+            self._hist = np.concatenate(
+                [np.zeros((need - len(self._hist), self.channels)), self._hist], axis=0)
+        else:
+            self._hist = self._hist[len(self._hist) - need:]
         self._last = (bass_db, mid_db, treble_db)
 
     def process(self, pcm_bytes, bass_db, mid_db, treble_db):
         if bass_db == 0.0 and mid_db == 0.0 and treble_db == 0.0:
-            return pcm_bytes  # flat -- skip the work, and never drift state while "off"
+            # flat -- skip the work, and start from silence when it is next
+            # switched on rather than filtering audio from long ago
+            self._hist = np.zeros((0, self.channels))
+            self._last = (0.0, 0.0, 0.0)
+            return pcm_bytes
         if (bass_db, mid_db, treble_db) != self._last:
             self._update(bass_db, mid_db, treble_db)
         arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float64)
         frames = len(arr) // self.channels
-        arr = arr.reshape(frames, self.channels)
-        out = np.empty_like(arr)
-        for ch in range(self.channels):
-            bass_f, mid_f, treble_f = self._bands[ch]
-            col = arr[:, ch]
-            outcol = out[:, ch]
-            for i in range(frames):
-                x = bass_f.process(col[i])
-                x = mid_f.process(x)
-                outcol[i] = treble_f.process(x)
+        if frames == 0:
+            return b""
+        x = arr[:frames * self.channels].reshape(frames, self.channels)
+        taps = len(self._ir)
+        seg = np.concatenate([self._hist, x], axis=0)
+        size = 1 << (len(seg) - 1).bit_length()
+        spectrum = self._spectra.get(size)
+        if spectrum is None:
+            spectrum = self._spectra[size] = np.fft.rfft(self._ir, size)
+        filtered = np.fft.irfft(np.fft.rfft(seg, size, axis=0) * spectrum[:, None], size, axis=0)
+        out = filtered[taps - 1:taps - 1 + frames]
+        self._hist = seg[len(seg) - (taps - 1):]
         # soft-limit, not hard-clip: a large boost on one band can push
         # samples well past full scale on its own, and a hard clip here
         # would introduce harsh distortion before the gain stage's own
@@ -1013,6 +1168,41 @@ class _ThreeBandEQ:
         # undo it, so this has to be soft-limited at the source
         limited = _soft_limit((out / 32768.0).astype(np.float32))
         return (limited * 32767.0).astype(np.int16).tobytes()
+
+
+class _StandingBacklogGuard:
+    """Notices when a queue has stopped draining, as opposed to merely
+    arriving in bursts.
+
+    Audio reaches the render loop in bursts (Windows hands the loopback stream
+    over in chunks on its own timer), so the queue is routinely two or three
+    chunks deep for a moment and then empty again. A queue that NEVER gets
+    anywhere near empty is different: the loop has fallen behind real time (a
+    stall, the app being deprioritised, sleep/resume) and every chunk in the
+    queue is lag the speakers are adding on top of the audio. Nothing ever
+    gives that lag back -- audio arrives and is consumed at the same rate --
+    so without this the PC speakers stayed behind (by seconds, in the worst
+    case) until the app was restarted, and every underrun on the way there
+    was an audible glitch.
+
+    Feed it the depth left behind after each get(); every `window_s` it
+    answers how many chunks to throw away to get back to (nearly) real time:
+    the low-water mark of that window, less one. Zero in normal operation."""
+
+    def __init__(self, min_backlog=3, window_s=0.5):
+        self.min_backlog = min_backlog
+        self.window_s = window_s
+        self._low = None
+        self._window_end = None
+
+    def check(self, depth_left, now):
+        if self._window_end is None:
+            self._window_end = now + self.window_s
+        self._low = depth_left if self._low is None else min(self._low, depth_left)
+        if now < self._window_end:
+            return 0
+        low, self._low, self._window_end = self._low, None, now + self.window_s
+        return low - 1 if low >= self.min_backlog else 0
 
 
 def render_loop(stop_event):
@@ -1031,6 +1221,7 @@ def render_loop(stop_event):
     self-healing pattern used elsewhere in the app (Sonos discovery, the
     stream watchdog)."""
     global current_render_device_name
+    _register_audio_thread()
     attempt = 0
     while not stop_event.is_set():
         try:
@@ -1097,6 +1288,9 @@ def _render_session(stop_event):
     bytes_per_ms = capture_rate * capture_channels * sample_width / 1000.0
     buf = bytearray()
     frame_bytes = CHUNK * capture_channels * sample_width
+    backlog_guard = _StandingBacklogGuard()
+    chunk_ms = CHUNK / float(capture_rate) * 1000.0
+    last_catch_up_log = 0.0
 
     try:
         while not stop_event.is_set():
@@ -1117,6 +1311,24 @@ def _render_session(stop_event):
                 chunk = q.get(timeout=1)
             except queue.Empty:
                 continue
+
+            # The delay above is held in `buf`, which the loop below always
+            # empties down to it -- so the drift guard after this can never
+            # see lag that piled up in the QUEUE, which is where it actually
+            # collects when the loop falls behind. This is the one that
+            # bounds it.
+            now = time.monotonic()
+            skip = backlog_guard.check(q.qsize(), now)
+            if skip:
+                for _ in range(skip):
+                    try:
+                        chunk = q.get_nowait()
+                    except queue.Empty:
+                        break
+                if now - last_catch_up_log > 5:
+                    last_catch_up_log = now
+                    print(f"[audio] the local speaker path had fallen ~{skip * chunk_ms:.0f}ms behind "
+                          f"real time; skipped ahead to catch up")
             buf.extend(chunk)
 
             # drift guard: if we've drifted more than ~200ms above target
@@ -1161,6 +1373,7 @@ _capture_lock = threading.Lock()
 
 def start_audio_engine(stop_event):
     global _render_stop_event, _render_thread, _capture_stop_event, _capture_thread
+    _harden_audio_scheduling()
     with _capture_lock:
         _capture_stop_event = threading.Event()
         _capture_thread = threading.Thread(target=capture_loop, args=(_capture_stop_event,), daemon=True)

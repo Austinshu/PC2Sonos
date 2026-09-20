@@ -388,6 +388,184 @@ assert (_np.abs(_extreme_out) >= 32767).sum() == 0, \
     "even a +24dB boost on already-loud audio must soft-limit, never hard-clip to the ceiling"
 print("  OK (a +24dB boost on loud audio soft-limits, doesn't hard-clip)")
 
+print("[test] _ThreeBandEQ: the fast (FFT) filter matches the sample-by-sample biquad chain it replaced...")
+
+
+def _reference_eq_chunks(chunks, channels, rate, bass, mid, treble):
+    """The original implementation, kept here as the reference: three biquads
+    per channel run one sample at a time in Python, state carried across chunks."""
+    bands = [[audio_engine._Biquad(), audio_engine._Biquad(), audio_engine._Biquad()] for _ in range(channels)]
+    for chain in bands:
+        chain[0].set_coeffs(*audio_engine._low_shelf_coeffs(audio_engine._EQ_BASS_HZ, rate, bass))
+        chain[1].set_coeffs(*audio_engine._peaking_coeffs(audio_engine._EQ_MID_HZ, rate, mid, audio_engine._EQ_MID_Q))
+        chain[2].set_coeffs(*audio_engine._high_shelf_coeffs(audio_engine._EQ_TREBLE_HZ, rate, treble))
+    outs = []
+    for c in chunks:
+        arr = _np.frombuffer(c, dtype=_np.int16).astype(_np.float64).reshape(-1, channels)
+        out = _np.empty_like(arr)
+        for ch in range(channels):
+            b_f, m_f, t_f = bands[ch]
+            for i in range(arr.shape[0]):
+                out[i, ch] = t_f.process(m_f.process(b_f.process(arr[i, ch])))
+        limited = audio_engine._soft_limit((out / 32768.0).astype(_np.float32))
+        outs.append((limited * 32767.0).astype(_np.int16))
+    return outs
+
+
+_rng = _np.random.default_rng(7)
+_EQ_RATE = 48000
+_tt = _np.arange(int(_EQ_RATE * 1.5)) / _EQ_RATE
+_music = _np.stack([
+    sum(0.15 * _np.sin(2 * _np.pi * f * _tt + p) for f, p in ((60, 0.3), (440, 1.1), (3000, 2.0), (9000, 0.7))),
+    sum(0.15 * _np.sin(2 * _np.pi * f * _tt + p) for f, p in ((90, 1.9), (700, 0.2), (5000, 0.5), (12000, 2.4))),
+], axis=1) + _rng.standard_normal((len(_tt), 2)) * 0.02
+_music_pcm = (_np.clip(_music, -1, 1) * 32767).astype(_np.int16)
+# chunk sizes that differ from each other and from the FFT size, as the real
+# render loop's do (1024 frames, or 1114/1115 after resampling from 44.1kHz)
+_sizes, _pos, _eq_chunks = [1024, 1114, 1115, 700, 1024, 1024, 333], 0, []
+while _pos < len(_music_pcm):
+    _n = _sizes[len(_eq_chunks) % len(_sizes)]
+    _eq_chunks.append(_music_pcm[_pos:_pos + _n].tobytes())
+    _pos += _n
+for _bands in ((13.0, 0.0, 0.0), (6.0, -3.0, 4.0), (-8.0, 5.0, -6.0), (24.0, 24.0, 24.0), (0.5, 0.0, 0.0)):
+    _ref = _reference_eq_chunks(_eq_chunks, 2, _EQ_RATE, *_bands)
+    _fast_eq = audio_engine._ThreeBandEQ(_EQ_RATE, 2)
+    _worst = 0
+    for _c, _r in zip(_eq_chunks, _ref):
+        _got = _np.frombuffer(_fast_eq.process(_c, *_bands), dtype=_np.int16).reshape(-1, 2)
+        assert _got.shape == _r.shape, (_got.shape, _r.shape)
+        _worst = max(_worst, int(_np.abs(_got.astype(_np.int32) - _r.astype(_np.int32)).max()))
+    assert _worst <= 1, f"EQ {_bands}: fast filter is {_worst} steps away from the biquad chain (must be <= 1)"
+print("  matches to within one 16-bit step at every setting, across uneven chunk boundaries OK")
+
+_t0 = time.perf_counter()
+_reference_eq_chunks(_eq_chunks[:20], 2, _EQ_RATE, 13.0, 0.0, 0.0)
+_t_ref = time.perf_counter() - _t0
+_fast_eq = audio_engine._ThreeBandEQ(_EQ_RATE, 2)
+_fast_eq.process(_eq_chunks[0], 13.0, 0.0, 0.0)  # first call builds the impulse response
+_t0 = time.perf_counter()
+for _c in _eq_chunks[:20]:
+    _fast_eq.process(_c, 13.0, 0.0, 0.0)
+_t_fast = time.perf_counter() - _t0
+# the whole point: this stage must leave the render loop nearly all of each
+# 21ms chunk (measured ~15x faster; 3x leaves room for a slow CI machine)
+assert _t_fast * 3 < _t_ref, f"fast EQ {_t_fast * 1000:.1f}ms vs per-sample {_t_ref * 1000:.1f}ms for 20 chunks"
+print(f"  {_t_ref / _t_fast:.0f}x faster than the per-sample loop OK")
+
+# changing the settings mid-stream must not click: no jump between the last
+# sample of one chunk and the first of the next beyond what the music itself does
+_sw_eq = audio_engine._ThreeBandEQ(_EQ_RATE, 2)
+_sw_out = []
+for _i, _c in enumerate(_eq_chunks[:16]):
+    _bands = (13.0, 0.0, 0.0) if _i < 8 else (2.0, 4.0, -5.0)
+    _sw_out.append(_np.frombuffer(_sw_eq.process(_c, *_bands), dtype=_np.int16).reshape(-1, 2))
+_sw = _np.concatenate(_sw_out).astype(_np.int32)
+_steps = _np.abs(_np.diff(_sw, axis=0)).max()
+_music_steps = _np.abs(_np.diff(_np.concatenate([_np.frombuffer(c, dtype=_np.int16).reshape(-1, 2)
+                                                for c in _eq_chunks[:16]]).astype(_np.int32), axis=0)).max()
+assert _steps < _music_steps * 4 + 2000, f"EQ change clicked: biggest sample step {_steps} (music's own: {_music_steps})"
+print("  changing the EQ mid-stream doesn't click OK")
+
+print("[test] _StandingBacklogGuard: bursts are fine, a queue that never drains is trimmed...")
+_g = audio_engine._StandingBacklogGuard(min_backlog=3, window_s=0.5)
+_now, _drops = 0.0, 0
+for _i in range(200):                     # 4s of bursty-but-draining arrival
+    _drops += _g.check([0, 2, 1, 0, 3, 0][_i % 6], _now)
+    _now += 0.02
+assert _drops == 0, "a queue that keeps returning to empty is bursts, not a backlog"
+_g = audio_engine._StandingBacklogGuard(min_backlog=3, window_s=0.5)
+_now, _drops = 0.0, []
+for _i in range(120):                     # 2.4s with the queue never below 4 chunks
+    _drops.append(_g.check(4, _now))
+    _now += 0.02
+assert [d for d in _drops if d] and sum(_drops) >= 3, _drops
+assert _drops.count(3) >= 1 and max(_drops) == 3, "should drop all but one of the standing backlog"
+_g = audio_engine._StandingBacklogGuard(min_backlog=3, window_s=0.5)
+_now, _drops = 0.0, 0
+for _i in range(100):                     # deep, but it does reach 1 every window: not standing
+    _drops += _g.check(9 if _i % 20 else 1, _now)
+    _now += 0.02
+assert _drops == 0, "a queue that dips low each window is draining"
+print("  OK")
+
+print("[test] render loop: lag that piles up in the queue is trimmed, not kept forever...")
+
+
+class _PacedStream(FakeStream):
+    """An output device that, like a real one, takes real time to play what it is
+    given -- on a deadline of its own, so the coarse Windows sleep tick can't make
+    it play slower than real time on average."""
+
+    def __init__(self):
+        self.written = 0
+        self._free_at = time.monotonic()
+
+    def write(self, data):
+        self.written += len(data)
+        self._free_at = max(self._free_at, time.monotonic() - 0.05) + len(data) / 4 / 44100.0
+        time.sleep(max(0.0, self._free_at - time.monotonic()))
+
+
+class _PacedPyAudio(FakePyAudio):
+    def open(self, **kwargs):
+        self.stream = _PacedStream()
+        return self.stream
+
+
+_real_pa_for_render = audio_engine._pa
+_paced = _PacedPyAudio()
+audio_engine._pa = _paced
+_saved_render_cfg = {k: audio_engine.config.get(k) for k in
+                     ("local_delay_ms", "render_device_substr", "local_eq_bass_db", "sample_rate", "channels")}
+audio_engine.config.update(local_delay_ms=0, render_device_substr="", local_eq_bass_db=0.0,
+                           sample_rate=44100, channels=2)
+_before = set(audio_engine.broadcaster._subs)
+_stop = threading.Event()
+_rt = threading.Thread(target=audio_engine.render_loop, args=(_stop,), daemon=True)
+_rt.start()
+for _ in range(100):
+    _new = set(audio_engine.broadcaster._subs) - _before
+    if _new:
+        break
+    time.sleep(0.05)
+assert _new, "the render session never subscribed"
+_rq = audio_engine.broadcaster._subs[_new.pop()]
+_c = b"\x10\x00" * 1024 * 2
+for _ in range(40):                       # a sudden ~0.9s of lag
+    audio_engine.broadcaster.publish(_c)
+_feeding = threading.Event()
+
+
+def _feed():                              # ...and audio keeps arriving at exactly real time after it
+    nxt = time.monotonic()
+    while not _feeding.is_set():
+        audio_engine.broadcaster.publish(_c)
+        nxt += 1024 / 44100.0
+        time.sleep(max(0.0, nxt - time.monotonic()))
+
+
+_ft = threading.Thread(target=_feed, daemon=True)
+_ft.start()
+time.sleep(0.1)
+_peak = _rq.qsize()
+_depths = []
+for _ in range(125):                      # 2.5s, sampled every 20ms
+    time.sleep(0.02)
+    _depths.append(_rq.qsize())
+_left = _depths[-1]
+_after_trim = max(_depths[60:])           # from 1.2s on, well after the first trim
+_feeding.set()
+_stop.set()
+_rt.join(timeout=3)
+_ft.join(timeout=1)
+audio_engine._pa = _real_pa_for_render
+audio_engine.config.update(_saved_render_cfg)
+assert _peak >= 20, f"test setup: expected a big backlog to start with, saw {_peak}"
+assert _after_trim <= 8, (f"a {_peak}-chunk backlog was still up to {_after_trim} chunks deep 1.2s later -- "
+                          f"that lag would have been permanent")
+assert _paced.stream.written > 40 * 4096, "audio must keep playing while the backlog is trimmed"
+print(f"  {_peak}-chunk backlog trimmed to at most {_after_trim} within seconds, playback continued OK")
+
 r = client.get("/api/audio_sessions")
 body = r.get_json()
 assert r.status_code == 200 and "sessions" in body and body["mode"] == "system" and body["targets"] == []
