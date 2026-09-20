@@ -43,6 +43,147 @@ telemetry, no account, and no license check -- it's a local web dashboard
 (default `http://127.0.0.1:5757`) plus a background audio/streaming
 engine, fully offline apart from that one-time-per-launch update check.
 
+## What's new in v1.5
+
+v1.5 is a bigger release than the ones before it, and most of it traces back
+to one piece of feedback: people did not want PC2Sonos anywhere near their
+microphone. Fixing that properly meant changing how the app reads your PC's
+audio, and the rest of the release is the work that made that change safe to
+ship, plus a few dashboard changes made along the way. Each section below says
+what changed, why, and what you'll notice.
+
+### PC2Sonos no longer opens a microphone (Windows)
+
+Until now, PC2Sonos read your PC's audio by opening VB-Audio Virtual Cable's
+*recording* device ("CABLE Output"). That device carries only your PC's own
+sound, but Windows can't tell -- it classifies every recording device as a
+microphone. So Windows listed PC2Sonos under Settings > Privacy & security >
+Microphone, showed the microphone-in-use indicator for as long as the app was
+running, and, because Windows 11's only switch for this is "all desktop apps
+or none," offered no way to turn it off without breaking the app.
+
+v1.5 reads the same audio a different way: WASAPI *loopback* capture of the
+cable's playback side ("CABLE Input", the device Windows already sends your
+sound to). Windows does not treat that as microphone access. This was checked
+directly rather than assumed: Windows keeps a per-app "last used the
+microphone" record, and on a Windows 11 PC that record does not change at all
+when the v1.5 build starts up or runs -- where the old build flipped it to "in
+use" -- and the optional per-app capture doesn't touch it either. The audio
+is identical to what the recording device carried (levels were compared
+through both paths), so nothing should sound different.
+
+Two things do change. First, loopback runs at the cable's own sample rate,
+usually 48 kHz, instead of the 44.1 kHz Windows converted the recording
+device to, so Sonos now receives 48 kHz audio: about 9% more data than before
+(roughly 1.54 Mbps instead of 1.41 Mbps). That is negligible on decent Wi-Fi,
+and the "Reduced bandwidth" option is still there for a speaker on a weak
+link. Second, the app now handles a change of sample rate itself (see
+"Steadier capture" below).
+
+You stay in control. Under Advanced > Capture method you can switch back to
+the recording device, and the dashboard shows which method is in use.
+PC2Sonos also falls back to the recording device automatically -- with an
+orange notice at the top of the dashboard explaining why -- if loopback can't
+be used: the cable's loopback device is missing, it won't open after three
+attempts, or the cable has been switched to a surround format. Audio never
+stops just because the newer method didn't work. The one thing that still
+uses a real microphone is the optional "Calibrate with test tone" button; the
+default Auto calibration measures Sonos's own playback clock and never
+touches one. macOS is unchanged in this respect: it has no loopback
+equivalent, so BlackHole is still read as an input (see the macOS section).
+
+### Steadier capture
+
+Loopback behaves differently from the recording device in ways that matter,
+so the capture code was reworked rather than simply pointed at a new device.
+
+**When nothing is playing.** Windows only sends loopback data while something
+is actually playing to that device, and for an ordinary speaker or headset an
+idle loopback sends nothing at all, so a plain read on it never returns.
+VB-Cable's own endpoint happens to keep delivering silence, but PC2Sonos
+doesn't rely on that: when no audio has arrived for 0.3 seconds it feeds your
+Sonos streams and the PC-speaker path real-time silence itself, so an idle
+system can't starve a speaker's stream. A read that is stuck can't be
+interrupted (closing the stream doesn't free it), so the app stops waiting
+for it after half a second instead of letting it block a restart.
+
+**No lost audio.** The first way of reading loopback that was tried polled for
+available frames. Testing on a real PC showed it silently dropped about half
+a percent of the audio -- roughly a quarter of a second every minute, with no
+error reported -- which was enough to make a Sonos speaker run out of
+buffered audio and stop every couple of minutes, and to put faint clicks in
+the PC speakers. The shipped design reads the stream with ordinary blocking
+reads on a dedicated thread instead, and delivery measures 99.96-100.02% of
+real time, both straight from the capture loop and through the Sonos stream
+endpoint. (The polling version was never in a release; it's mentioned because
+it is why the final design looks the way it does.)
+
+**Sample-rate changes.** The delayed PC-speaker path and every Sonos stream
+latch the audio format when they start. That never mattered while the format
+was always 44.1 kHz, but loopback runs at the cable's rate and a fallback to
+the recording device changes it again. PC2Sonos now publishes the format once
+the capture stream is actually open and, if it differs from what the rest of
+the app started with, restarts the PC-speaker path and reconnects any
+streaming Sonos speaker at the right rate -- Sonos first, so a stream that is
+just starting isn't knocked over -- then remembers the new format so later
+launches have nothing to restart. Switching between two audio sources that
+share a format (whole-system and per-app capture are both 48 kHz on most PCs)
+no longer interrupts anything, where before every switch reconnected Sonos.
+The format handling applies on macOS too. Separately, the lookup for the
+recording device can no longer resolve to a loopback device by mistake.
+
+### PC speaker volume and boost are now two controls
+
+The dashboard's PC speaker slider used to be one 0-500% control: below 100% it
+turned the PC speakers down, above 100% it boosted them, with a limiter and a
+warning. That is a reasonable advanced tool and a poor main-page volume
+control -- it took only a slightly enthusiastic drag to land on 250% or more,
+and the master volume slider then scaled whatever elevated value was there, so
+a boost you never chose could show up on its own.
+
+In v1.5 they are separate. The **Volume** slider in the PC speaker output
+card runs from 0% to 100% and defaults to 100%, the original level; it can
+only turn things down. The **PC speaker boost** is its own slider under
+Advanced, from 100% (no boost, the default) to 500%, with the same soft
+limiter and the same hardware-risk warning while it is on. It multiplies the
+volume, and because it is the one control that can stress speakers, nothing
+you drag around casually can move it any more: the master volume slider scales
+your Sonos speakers and the PC speaker volume (down only for the PC, never
+above where you had it) and never touches the boost. Below 100% the volume is
+now a plain linear scale rather than going through the limiter, so turning it
+down no longer squashes loud peaks.
+
+Existing installs are migrated automatically: an old value below 100% becomes
+the new volume, and an old value above 100% stays as the boost -- so a boost
+you never intended is now visible and adjustable under Advanced instead of
+hiding behind the main slider. A dashboard sentence claiming that Windows' own
+volume controls what PC2Sonos captures was also removed: with the virtual
+cable, Windows' volume for the cable affects neither capture path, while
+Windows' volume for your real speakers still applies on top of the PC speaker
+volume, as it always did.
+
+### The update banner shows the changelog
+
+When a newer version exists, the dashboard's update banner now has a **What's
+new** toggle with that release's notes, so you can read what changed before
+deciding whether to update -- and it stays available whether or not you
+download anything. The notes come from the same single request the update check
+already makes at launch, so nothing new is fetched and the app is exactly as
+offline as before. They are shown as plain formatted text (nothing in a
+release description can inject content into the dashboard), and the box
+scrolls inside a height cap of about 45% of the window, so it fits a
+standard-height monitor as comfortably as a widescreen one.
+
+### Housekeeping
+
+The last leftover code from an early paid-download idea has been removed from
+the Windows uninstaller; PC2Sonos is free, with an optional donation link. The
+microphone section of this README was rewritten to match the new behavior, and
+it credits the r/sonos comment that prompted all of this. New automated tests
+cover the loopback path (including an idle device, a stream that stops
+delivering, every fallback, and sample-rate changes), the volume/boost split
+and its config migration, and the release-notes rendering.
+
 ## Why the delay slider exists
 
 Sonos speakers buffer incoming audio by roughly a second or two so that
