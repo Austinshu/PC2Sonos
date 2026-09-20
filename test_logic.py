@@ -496,7 +496,7 @@ print("[test] render loop: lag that piles up in the queue is trimmed, not kept f
 # be trusted to keep pace on a busy shared CI runner). A backlog that starts in
 # the queue therefore CANNOT drain by itself -- it stays exactly as deep as it
 # began, which is the permanent-lag situation -- and only the guard can remove it.
-_lockstep = {"depths": [], "rq": None, "written": 0}
+_lockstep = {"samples": [], "rq": None, "written": 0}
 _LS_CHUNK = b"\x10\x00" * 1024 * 2
 
 
@@ -506,7 +506,7 @@ class _LockstepStream(FakeStream):
         _lockstep["written"] += len(data)
         audio_engine.broadcaster.publish(_LS_CHUNK)  # ...and one more chunk arrives per chunk played
         if _lockstep["rq"] is not None:
-            _lockstep["depths"].append(_lockstep["rq"].qsize())
+            _lockstep["samples"].append((time.monotonic(), _lockstep["rq"].qsize()))
 
 
 class _LockstepPyAudio(FakePyAudio):
@@ -538,15 +538,20 @@ _stop.set()
 _rt.join(timeout=3)
 audio_engine._pa = _real_pa_for_render
 audio_engine.config.update(_saved_render_cfg)
-_d = list(_lockstep["depths"])
-assert len(_d) > 100, f"the render loop barely ran ({len(_d)} writes)"
-_peak = max(_d[:20])
-_late = sorted(_d[len(_d) * 3 // 4:])     # the last quarter: long after the guard's first window
+_samples = list(_lockstep["samples"])
+# How many writes fit in the time depends on the machine's sleep granularity (a
+# shared macOS runner sleeps far longer than asked), so judge by elapsed time.
+assert len(_samples) >= 30, f"the render loop barely ran ({len(_samples)} writes)"
+_t_first = _samples[0][0]
+assert _samples[-1][0] - _t_first >= 1.5, "the render loop stopped early"
+_peak = max(d for _, d in _samples[:5])
+_late = sorted(d for t, d in _samples if t - _t_first >= 1.2)   # long after the guard's first window
+assert len(_late) >= 5, f"too few writes late in the run ({len(_late)})"
 _after_trim = _late[len(_late) // 2]
 assert _peak >= 30, f"test setup: expected a big backlog at the start, saw {_peak}"
 assert _after_trim <= 5, (f"a {_peak}-chunk backlog was still {_after_trim} chunks deep at the end -- "
                           f"in lock-step it can only stay that deep if nothing ever trims it")
-assert _lockstep["written"] > 100 * 4096, "audio must keep playing while the backlog is trimmed"
+assert _lockstep["written"] > 30 * 4096, "audio must keep playing while the backlog is trimmed"
 print(f"  {_peak}-chunk backlog trimmed to {_after_trim} within seconds, playback continued OK")
 
 r = client.get("/api/audio_sessions")
