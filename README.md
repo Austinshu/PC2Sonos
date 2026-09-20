@@ -43,6 +43,80 @@ telemetry, no account, and no license check -- it's a local web dashboard
 (default `http://127.0.0.1:5757`) plus a background audio/streaming
 engine, fully offline apart from that one-time-per-launch update check.
 
+## What's new in v1.5.2
+
+v1.5.2 fixes a problem that made the PC speakers slide out of sync with the
+audio and crackle. It turned up while testing v1.5 on a real PC, but it is not
+caused by v1.5's microphone-free capture: it is older than that, v1.4.5 has it
+too, and it only appears when the PC speaker EQ is switched on. It also showed
+up far more in the installed app, which runs as a windowless background
+program, than in a test run from a console window -- which is why it took
+measuring on a real PC to find it. Everything described under v1.5.1 and v1.5
+below is part of this release as well.
+
+**What it sounded like.** With a bass boost (or any EQ band) on, the PC
+speakers fell a little further behind the audio every second: on the test PC
+134 ms behind shortly after start, 318 ms behind a hundred seconds later, and
+still climbing. So they drifted out of sync with the Sonos speakers, and with
+any video, and crackled as they did. Sonos itself was unaffected. Switching
+the EQ off stopped it getting worse but left the delay wherever it had got to
+(about a second, in the test); only restarting the PC speaker path, or the app,
+cleared it.
+
+**Why.** Three things stacked up. The EQ ran its three filters one sample at a
+time in a Python loop -- around 6,000 steps for every 21 ms of audio. On a fast
+PC that is a tenth of one core, no trouble on its own. But PC2Sonos has no
+window, and Windows 11 treats a windowless background program as low priority:
+it runs it on slower cores and lets its timers slip. The loop then ran a
+fraction of a percent slower than real time, which sounds like nothing and is
+a few milliseconds every second. And nothing ever gave that lag back: the audio
+waiting to be played piled up in a queue, and the safeguard that was meant to
+bound the delay looked at a different buffer, one the loop empties on every
+pass, so it could never see the lag. The speakers stayed as far behind as they
+had got until PC2Sonos was restarted, and every moment the sound device ran dry
+along the way was a crackle. (Turning the throttling off for the running
+program stopped the creep, and handing it back to Windows started it again --
+that is how the cause was pinned down.)
+
+**What changed.**
+
+- The EQ is the same filter, worked out once per chunk of audio instead of one
+  sample at a time (a convolution with the filter's own impulse response,
+  carrying the tail of each chunk into the next). On real music its output is
+  within a single 16-bit step of the old one, and it takes about a nineteenth
+  as long: 0.15 ms instead of 2.1 ms for each 21 ms of audio. Nothing about the
+  EQ's sound or its controls changed.
+- The PC speaker path now notices if it ever does fall behind -- a stall, the
+  machine sleeping and waking, heavy load -- and skips ahead within half a
+  second instead of staying late. Audio arrives in short bursts, so a queue a
+  couple of chunks deep for a moment is normal and is left alone; only a queue
+  that never comes near empty counts as lag. When it trims, it says so in the
+  log.
+- PC2Sonos now tells Windows what it is. It opts out of the background
+  throttling, asks for a 1 ms timer (the Windows default is 15.6 ms, which also
+  made the loopback capture hand audio over in uneven bursts), and registers its
+  capture and render threads as audio threads with the multimedia scheduler,
+  the way audio software is meant to. The watcher that keeps an idle loopback
+  stream alive also looks five times less often while audio is flowing.
+  Troubleshooting > diagnostics report what is in effect.
+
+**How it was checked.** On a real PC, by recording the audio going into the
+virtual cable and the audio coming out of the PC speakers at the same time and
+measuring the delay between them every few seconds. With the packaged program
+launched the way Windows launches it (no window) and a +13 dB bass boost on,
+the delay stayed at a constant 165 ms for three minutes, where before it climbed
+two to three milliseconds every second; by ear it was clean and in sync. New
+automated tests cover the EQ against the old filter across uneven chunk sizes,
+its speed, that changing the EQ mid-song doesn't click, the backlog safeguard on
+its own, and a render loop handed a 40-chunk backlog.
+
+One thing worth knowing: that steady delay -- about 0.165 s on the test PC,
+with the EQ on or off -- is roughly 0.07 to 0.08 s more than v1.4.5's 0.08 to
+0.1 s with the EQ off. Loopback hands audio over in short bursts, and playing it
+without gaps means holding a little in reserve. It no longer grows, but if you
+watch video on the PC speakers you may notice the sound arriving a touch later
+than it did on v1.4.x.
+
 ## What's new in v1.5.1
 
 v1.5.1 fixes one thing from v1.5.0: the PC speaker **Volume** slider often
