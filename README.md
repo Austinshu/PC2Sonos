@@ -43,6 +43,34 @@ telemetry, no account, and no license check -- it's a local web dashboard
 (default `http://127.0.0.1:5757`) plus a background audio/streaming
 engine, fully offline apart from that one-time-per-launch update check.
 
+## What's new in v1.5.1
+
+v1.5.1 fixes one thing from v1.5.0: the PC speaker **Volume** slider often
+seemed to do nothing. In v1.5.0 the Volume slider and the boost (under
+Advanced) were multiplied into a single gain that then went through the soft
+limiter. With a large boost -- and especially with a bass boost in the EQ
+ahead of it -- the limiter squashes the signal so hard that turning the
+volume down removed far less loudness than it should. Measured on a loud test
+signal at a 204% boost, dragging Volume from 100% to 56% took off only 2.6 dB
+instead of 5.0 dB, and 100% to 75% only 1.1 dB instead of 2.5, so most of the
+slider's travel felt like it changed nothing.
+
+The level chain now runs in the order a real amplifier has it: the boost
+first, soft-limited so it can't hard-clip, and then the Volume as a plain
+linear scale of the result. 56% is now exactly 56% of the level, whatever the
+boost is set to. The boost itself, the limiter, the EQ and the master volume
+slider behave as before, and a new automated test checks the proportional
+response at boosts of 100%, 204% and 500%.
+
+One thing the fix can't do for you: Windows' own volume keys and taskbar
+slider control your default playback device, which with PC2Sonos is the
+virtual cable, not your speakers -- so they don't change how loud the PC
+speakers are. Those have their own volume in Windows (Settings > System >
+Sound, on your speakers' entry). If your PC speakers sound too quiet, raise
+that first; it is cleaner than the boost, which is meant for a speaker that is
+still too quiet with that turned up. The dashboard's Volume description and
+this README now say so.
+
 ## What's new in v1.5
 
 v1.5 is a bigger release than the ones before it, and most of it traces back
