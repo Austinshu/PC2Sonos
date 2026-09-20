@@ -21,13 +21,11 @@ Removes:
      uninstaller -- see VBCABLE_UNINSTALL_HINT below)
   4. The two PC2Sonos Windows Firewall rules
   5. The Startup + Desktop shortcuts
-  6. The leftover HKCU\\Software\\PC2Sonos registry key, if present
-     (used by an earlier trial system; harmless but no longer used)
-  7. The app binaries (wherever installed, per the registry's
+  6. The app binaries (wherever installed, per the registry's
      InstallLocation), %ProgramData%\\PC2Sonos (config, logs), and any
      leftovers from older versions' install locations (Documents,
      %LOCALAPPDATA%)
-  8. The Windows "Apps & Features" entry for PC2Sonos itself
+  7. The Windows "Apps & Features" entry for PC2Sonos itself
 
 Does NOT touch: your Sonos speakers (there's nothing on them to
 undo), or any other app that happens to also use VB-CABLE for
@@ -227,16 +225,6 @@ def remove_shortcuts():
                 say(f"  couldn't remove {shortcut}: {e}")
 
 
-def remove_registry_leftovers():
-    try:
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\PC2Sonos")
-        say("  removed leftover HKCU\\Software\\PC2Sonos registry key")
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        say(f"  couldn't remove registry leftovers: {e}")
-
-
 def remove_old_data_dirs():
     """Older versions kept binaries and config.json together, first in
     %LOCALAPPDATA%\\PC2Sonos, then Documents\\PC2Sonos. Neither is the
@@ -325,7 +313,6 @@ def main():
     remove_shortcuts()
 
     say("[6/7] Cleaning up registry...")
-    remove_registry_leftovers()
     remove_uninstall_registration()
 
     say("[7/7] Removing app files...")
