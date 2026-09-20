@@ -490,31 +490,32 @@ print("  OK")
 
 print("[test] render loop: lag that piles up in the queue is trimmed, not kept forever...")
 
+# Deterministic by construction: every write to the fake device publishes exactly
+# one new chunk, so audio arrives at precisely the rate it is consumed no matter
+# how the machine's scheduler treats the threads (a real-time feeder thread can't
+# be trusted to keep pace on a busy shared CI runner). A backlog that starts in
+# the queue therefore CANNOT drain by itself -- it stays exactly as deep as it
+# began, which is the permanent-lag situation -- and only the guard can remove it.
+_lockstep = {"depths": [], "rq": None, "written": 0}
+_LS_CHUNK = b"\x10\x00" * 1024 * 2
 
-class _PacedStream(FakeStream):
-    """An output device that, like a real one, takes real time to play what it is
-    given -- on a deadline of its own, so the coarse Windows sleep tick can't make
-    it play slower than real time on average."""
 
-    def __init__(self):
-        self.written = 0
-        self._free_at = time.monotonic()
-
+class _LockstepStream(FakeStream):
     def write(self, data):
-        self.written += len(data)
-        self._free_at = max(self._free_at, time.monotonic() - 0.05) + len(data) / 4 / 44100.0
-        time.sleep(max(0.0, self._free_at - time.monotonic()))
+        time.sleep(0.005)                          # a device call takes some real time
+        _lockstep["written"] += len(data)
+        audio_engine.broadcaster.publish(_LS_CHUNK)  # ...and one more chunk arrives per chunk played
+        if _lockstep["rq"] is not None:
+            _lockstep["depths"].append(_lockstep["rq"].qsize())
 
 
-class _PacedPyAudio(FakePyAudio):
+class _LockstepPyAudio(FakePyAudio):
     def open(self, **kwargs):
-        self.stream = _PacedStream()
-        return self.stream
+        return _LockstepStream()
 
 
 _real_pa_for_render = audio_engine._pa
-_paced = _PacedPyAudio()
-audio_engine._pa = _paced
+audio_engine._pa = _LockstepPyAudio()
 _saved_render_cfg = {k: audio_engine.config.get(k) for k in
                      ("local_delay_ms", "render_device_substr", "local_eq_bass_db", "sample_rate", "channels")}
 audio_engine.config.update(local_delay_ms=0, render_device_substr="", local_eq_bass_db=0.0,
@@ -529,45 +530,24 @@ for _ in range(100):
         break
     time.sleep(0.05)
 assert _new, "the render session never subscribed"
-_rq = audio_engine.broadcaster._subs[_new.pop()]
-_c = b"\x10\x00" * 1024 * 2
-for _ in range(40):                       # a sudden ~0.9s of lag
-    audio_engine.broadcaster.publish(_c)
-_feeding = threading.Event()
-
-
-def _feed():                              # ...and audio keeps arriving at exactly real time after it
-    nxt = time.monotonic()
-    while not _feeding.is_set():
-        audio_engine.broadcaster.publish(_c)
-        nxt += 1024 / 44100.0
-        time.sleep(max(0.0, nxt - time.monotonic()))
-
-
-_ft = threading.Thread(target=_feed, daemon=True)
-_ft.start()
-time.sleep(0.1)
-_peak = _rq.qsize()
-_depths = []
-for _ in range(125):                      # 2.5s, sampled every 20ms
-    time.sleep(0.02)
-    _depths.append(_rq.qsize())
-# from 1.2s on, well after the first trim. The MEDIAN, not the worst moment: a
-# busy CI machine can stall the consumer for a beat and briefly rebuild a queue,
-# but without the guard the backlog sits near its starting depth the whole time
-_late = sorted(_depths[60:])
-_after_trim = _late[len(_late) // 2]
-_feeding.set()
+_lockstep["rq"] = audio_engine.broadcaster._subs[_new.pop()]
+for _ in range(40):                       # a sudden ~0.9s of lag; each write after this adds a chunk
+    audio_engine.broadcaster.publish(_LS_CHUNK)
+time.sleep(2.5)
 _stop.set()
 _rt.join(timeout=3)
-_ft.join(timeout=1)
 audio_engine._pa = _real_pa_for_render
 audio_engine.config.update(_saved_render_cfg)
-assert _peak >= 20, f"test setup: expected a big backlog to start with, saw {_peak}"
-assert _after_trim <= 10, (f"a {_peak}-chunk backlog was still typically {_after_trim} chunks deep 1.2s later -- "
-                           f"that lag would have been permanent")
-assert _paced.stream.written > 40 * 4096, "audio must keep playing while the backlog is trimmed"
-print(f"  {_peak}-chunk backlog trimmed to a typical {_after_trim} within seconds, playback continued OK")
+_d = list(_lockstep["depths"])
+assert len(_d) > 100, f"the render loop barely ran ({len(_d)} writes)"
+_peak = max(_d[:20])
+_late = sorted(_d[len(_d) * 3 // 4:])     # the last quarter: long after the guard's first window
+_after_trim = _late[len(_late) // 2]
+assert _peak >= 30, f"test setup: expected a big backlog at the start, saw {_peak}"
+assert _after_trim <= 5, (f"a {_peak}-chunk backlog was still {_after_trim} chunks deep at the end -- "
+                          f"in lock-step it can only stay that deep if nothing ever trims it")
+assert _lockstep["written"] > 100 * 4096, "audio must keep playing while the backlog is trimmed"
+print(f"  {_peak}-chunk backlog trimmed to {_after_trim} within seconds, playback continued OK")
 
 r = client.get("/api/audio_sessions")
 body = r.get_json()
