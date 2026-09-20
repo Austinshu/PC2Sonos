@@ -95,6 +95,17 @@ DEFAULT_CONFIG = {
     # macOS the equivalent virtual device is "BlackHole 2ch", which is
     # both an output (apps play into it) and the input we capture from.
     "capture_device_substr": "BlackHole" if sys.platform == "darwin" else "CABLE Output",
+    # Windows only. "loopback" (default) reads the audio Windows is sending
+    # to the virtual cable's *playback* side ("CABLE Input") through WASAPI
+    # loopback, which Windows does NOT treat as microphone access.
+    # "recording" is the original method: open the cable's *recording* side
+    # (capture_device_substr, "CABLE Output"), which Windows gates behind
+    # the Microphone privacy permission and shows as the mic being in use
+    # the entire time PC2Sonos runs. Loopback quietly falls back to
+    # "recording" if it can't be used (see audio_engine.get_capture_status).
+    # macOS has no loopback equivalent -- BlackHole is read as an input --
+    # so this is ignored there.
+    "capture_method": "loopback" if sys.platform == "win32" else "recording",
     # Blank = auto-pick the first real (non-virtual) WASAPI output device.
     "render_device_substr": "",
     # "system" (default): capture whatever's playing through the virtual

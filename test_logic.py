@@ -146,6 +146,11 @@ client = webapp.app.test_client()
 
 r = client.get("/")
 assert r.status_code == 200 and b"Sonos speakers" in r.data, "expected the full dashboard"
+# the PC speaker volume slider lives on the main page, in the PC speaker output
+# card -- not tucked away inside the collapsed Advanced card
+_page = r.data.decode("utf-8")
+assert _page.count('id="localGain"') == 1, "exactly one PC speaker volume slider"
+assert _page.index("PC speaker output") < _page.index('id="localGain"') < _page.index("Advanced:"),     "the volume slider must sit in the PC speaker output card, above the collapsed Advanced card"
 print("  / OK")
 
 r = client.get("/api/speakers")
@@ -244,6 +249,18 @@ assert _loud_boosted.max() < 32767 and _loud_boosted.min() > -32768, \
 assert (_np.abs(_loud_boosted) >= 32767).sum() == 0, \
     "the soft limiter should never pin samples exactly at full scale the way a hard clip does"
 print("  local_render_gain sample scaling OK (quiet audio scales linearly, loud audio soft-limits)")
+
+# the dashboard volume slider goes down as well as up: turning DOWN must be a
+# plain linear scale, not run through the limiter (which would still squash a
+# loud peak while making the sound quieter)
+_full_peak = _struct.pack("<2h", 32000, -32000)
+_down = _struct.unpack("<2h", audio_engine._apply_local_gain(_full_peak, 0.9))
+assert _down == (28800, -28800), f"90% volume must scale a loud peak by exactly 0.9, got {_down}"
+_half = _np.frombuffer(audio_engine._apply_local_gain(_loud, 0.5), dtype=_np.int16)
+_orig = _np.frombuffer(_loud, dtype=_np.int16)
+assert _np.abs(_half.astype(_np.int32) * 2 - _orig).max() <= 2, "50% volume must be a straight halving"
+assert not any(audio_engine._apply_local_gain(_loud, 0.0)), "0% volume is silence"
+print("  local volume below 100% is a plain linear scale OK")
 
 r = client.post("/api/local_eq", json={"bass": 6, "mid": -3, "treble": 999})  # treble clamps
 assert r.status_code == 200
@@ -392,6 +409,316 @@ try:
 finally:
     webapp.config["capture_mode"] = _orig_mode
     webapp.config["capture_target_names"] = _orig_targets
+
+print("[test] Windows loopback capture: default, silence fill, fallbacks, switching...")
+# On Windows the cable can be read two ways: WASAPI loopback of "CABLE Input"
+# (Windows doesn't treat that as microphone use) or by opening the cable's
+# *recording* device "CABLE Output" (which it does). These drive the real
+# capture loop against a fake PyAudio that has both, and check which one it
+# opens, what it publishes, and that it never gets stuck.
+import audio_backend as _ab  # noqa: E402
+
+assert _ab.BACKEND == "pyaudiowpatch"  # the stub above stands in for it, even on macOS CI
+_CH = audio_engine.CHUNK
+
+
+class _LoopbackFakeStream:
+    """A loopback endpoint that has `chunks` ready to read, then goes quiet --
+    like Windows, which sends nothing while nothing is playing."""
+
+    def __init__(self, chunks):
+        self.remaining = chunks
+
+    def get_read_available(self):
+        return _CH * self.remaining
+
+    def read(self, n, exception_on_overflow=False):
+        assert self.remaining > 0, "read() must only be called once frames are available"
+        self.remaining -= 1
+        return b"\x01\x00" * n * 2  # non-silent
+
+    def stop_stream(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class _RecordingFakeStream(FakeStream):
+    def read(self, n, exception_on_overflow=False):
+        time.sleep(0.004)
+        return b"\x02\x00" * n * 2
+
+
+class _CableFakePyAudio:
+    def __init__(self, cable_channels=2):
+        def dev(name, inch, outch, rate, loop=False):
+            d = {"name": name, "maxInputChannels": inch, "maxOutputChannels": outch,
+                 "defaultSampleRate": rate, "hostApi": 0}
+            if loop:
+                d["isLoopbackDevice"] = True
+            return d
+        self.devices = [
+            dev("CABLE Output (VB-Audio Virtual Cable)", 2, 0, 44100.0),
+            dev("CABLE Input (VB-Audio Virtual Cable) [Loopback]", cable_channels, 0, 48000.0, loop=True),
+            dev("Speakers (Realtek(R) Audio)", 0, 2, 48000.0),
+            dev("Speakers (Realtek(R) Audio) [Loopback]", 2, 0, 48000.0, loop=True),
+        ]
+        self.opened = []  # input_device_index of each capture stream opened, in order
+        self.fail_loopback_open = False
+        self.loopback_chunks = 0
+
+    def get_device_count(self):
+        return len(self.devices)
+
+    def get_device_info_by_index(self, i):
+        d = dict(self.devices[i])
+        d["index"] = i
+        return d
+
+    def get_host_api_info_by_type(self, t):
+        return {"index": 0}
+
+    def get_host_api_info_by_index(self, i):
+        return {"name": "Windows WASAPI"}
+
+    def open(self, **kw):
+        if not kw.get("input"):
+            return FakeStream()
+        idx = kw["input_device_index"]
+        self.opened.append(idx)
+        if self.devices[idx].get("isLoopbackDevice"):
+            if self.fail_loopback_open:
+                raise OSError("simulated: Invalid sample rate")
+            return _LoopbackFakeStream(self.loopback_chunks)
+        return _RecordingFakeStream()
+
+
+_real_pa = audio_engine._pa
+_real_engine_time = audio_engine.time
+_saved_capture_cfg = {k: audio_engine.config.get(k) for k in
+                      ("capture_method", "capture_device_substr", "capture_mode", "capture_target_names")}
+
+
+class _FastSleepTime:
+    """audio_engine's `time`, with sleeps shortened so the open-failure retry
+    waits (2s, 4s) don't make the test slow. Only audio_engine sees this."""
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+    @staticmethod
+    def sleep(s):
+        time.sleep(min(s, 0.02))
+
+
+def _capture_for(fake_pa, seconds, fast_sleep=False):
+    """Run the real system-capture loop against `fake_pa` for `seconds`;
+    returns (published chunks, status while running, thread stopped in time)."""
+    audio_engine._pa = fake_pa
+    if fast_sleep:
+        audio_engine.time = _FastSleepTime()
+    stop = threading.Event()
+    sid, q = audio_engine.broadcaster.subscribe(maxlen=100000)
+    th = threading.Thread(target=audio_engine._capture_loop_system, args=(stop,), daemon=True)
+    th.start()
+    time.sleep(seconds)
+    status = audio_engine.get_capture_status()
+    stop.set()
+    th.join(timeout=2)
+    audio_engine.broadcaster.unsubscribe(sid)
+    audio_engine._pa = _real_pa
+    audio_engine.time = _real_engine_time
+    chunks = []
+    while not q.empty():
+        chunks.append(q.get_nowait())
+    return chunks, status, not th.is_alive()
+
+
+_real_restart_downstream = audio_engine._restart_downstream
+_restart_calls = []
+_saved_format = (audio_engine.config.get("sample_rate"), audio_engine.config.get("channels"))
+
+try:
+    audio_engine.config["capture_device_substr"] = "CABLE Output"
+    audio_engine.config["capture_mode"] = "system"
+    audio_engine.config["capture_target_names"] = []
+    audio_engine.config["capture_method"] = "loopback"
+    # the format config.json was left holding by earlier (44.1kHz recording-device) runs
+    audio_engine.config["sample_rate"], audio_engine.config["channels"] = 44100, 2
+    audio_engine._restart_downstream = lambda: _restart_calls.append(1)
+
+    # (0) the render path and Sonos streams latch the capture format when they
+    # start, so they must be restarted exactly when the format really changes
+    audio_engine._publish_capture_format(44100, 2)
+    time.sleep(0.1)
+    assert _restart_calls == [], "same format: nothing should restart"
+    audio_engine._publish_capture_format(48000, 2)
+    time.sleep(0.1)
+    assert len(_restart_calls) == 1 and audio_engine.config["sample_rate"] == 48000
+    assert load_config()["sample_rate"] == 48000,         "the new format must be saved, so later launches find it and have nothing to restart"
+    audio_engine._publish_capture_format(48000, 2)
+    time.sleep(0.1)
+    assert len(_restart_calls) == 1, "unchanged format must not restart again"
+    audio_engine._publish_capture_format(48000, 1)
+    time.sleep(0.1)
+    assert len(_restart_calls) == 2, "a channel-count change is a format change too"
+    _restart_calls.clear()
+    audio_engine.config["sample_rate"], audio_engine.config["channels"] = 44100, 2
+    print("  format changes restart downstream exactly once OK")
+
+    # (a) lookups: loopback is found by its playback-side name; the recording
+    # lookup never resolves to a loopback device (opening one with the
+    # blocking recording read would hang whenever nothing plays to it).
+    audio_engine._pa = _CableFakePyAudio()
+    assert audio_engine.find_loopback_device("CABLE Input")[0] == 1
+    assert audio_engine.find_loopback_device("no such device")[0] is None
+    assert audio_engine.find_device_index("CABLE Output", want_input=True)[0] == 0
+    assert audio_engine.find_device_index("Realtek", want_input=True)[0] is None, \
+        "the recording lookup must not return a [Loopback] device"
+    assert audio_engine._loopback_render_substr() == "CABLE Input"
+    audio_engine.config["capture_device_substr"] = "CABLE-A Output"
+    assert audio_engine._loopback_render_substr() == "CABLE-A Input"
+    audio_engine.config["capture_device_substr"] = "CABLE Output"
+    audio_engine._pa = _real_pa
+    print("  device lookups OK")
+
+    # (b) default path: opens the LOOPBACK device (not the microphone-class
+    # recording one), at the loopback's own rate, and publishes what it reads
+    fake = _CableFakePyAudio()
+    fake.loopback_chunks = 6
+    chunks, status, stopped = _capture_for(fake, 0.25)
+    assert fake.opened == [1], f"loopback should be the only device opened, got {fake.opened}"
+    assert status["method"] == "loopback" and status["rate"] == 48000 and status["channels"] == 2, status
+    assert status["fallback_reason"] is None
+    assert audio_engine.config["sample_rate"] == 48000
+    real = [c for c in chunks if any(c)]
+    assert len(real) == 6 and all(len(c) == _CH * 4 for c in real), (len(real), len(chunks))
+    assert stopped
+    time.sleep(0.1)
+    assert len(_restart_calls) == 1, "44.1kHz config -> 48kHz loopback must restart downstream once"
+    print("  loopback is the default and never opens the recording device OK")
+
+    # (c) Windows sends nothing while idle: the loop keeps the streams alive
+    # with real-time silence instead of blocking, then stops promptly
+    fake = _CableFakePyAudio()
+    fake.loopback_chunks = 0
+    chunks, status, stopped = _capture_for(fake, 1.0)
+    assert stopped, "an idle loopback must not stop the thread from exiting"
+    assert chunks and not any(any(c) for c in chunks), "idle fill must be silence"
+    assert all(len(c) == _CH * 4 for c in chunks)
+    expected = (1.0 - audio_engine._LOOPBACK_IDLE_GRACE_S) * 48000 / _CH   # ~33 chunks
+    assert expected * 0.5 <= len(chunks) <= expected * 1.5, \
+        f"silence fill should run at real time (~{expected:.0f} chunks), got {len(chunks)}"
+    assert len(_restart_calls) == 1, "same 48kHz format again: no restart"
+    print(f"  idle loopback fills real-time silence ({len(chunks)} chunks in 1s) OK")
+
+    # (d) real audio resumes after an idle stretch: silence stops, audio flows
+    fake = _CableFakePyAudio()
+    stream = _LoopbackFakeStream(0)
+    fake.open = lambda **kw: (fake.opened.append(kw["input_device_index"]) or stream)
+    audio_engine._pa = fake
+    stop = threading.Event()
+    sid, q = audio_engine.broadcaster.subscribe(maxlen=100000)
+    th = threading.Thread(target=audio_engine._capture_loop_system, args=(stop,), daemon=True)
+    th.start()
+    time.sleep(0.7)            # idle: silence is being fed
+    stream.remaining = 5       # playback starts
+    time.sleep(0.3)
+    stop.set(); th.join(timeout=2)
+    audio_engine.broadcaster.unsubscribe(sid)
+    audio_engine._pa = _real_pa
+    got = []
+    while not q.empty():
+        got.append(q.get_nowait())
+    loud = [i for i, c in enumerate(got) if any(c)]
+    assert len(loud) == 5, f"expected the 5 real chunks, got {len(loud)}"
+    assert loud[0] > 0, "silence should have been fed before the audio started"
+    assert not th.is_alive()
+    print("  audio after an idle stretch comes through OK")
+
+    # (e) fallbacks: every reason loopback can't be used ends up on the
+    # recording device (with the reason recorded), never on silence
+    fake = _CableFakePyAudio()
+    del fake.devices[1]            # no loopback device at all (e.g. cable renamed)
+    chunks, status, _ = _capture_for(fake, 0.2)
+    assert fake.opened == [0] and status["method"] == "recording", (fake.opened, status)
+    assert status["fallback_reason"] and "no loopback device" in status["fallback_reason"], status
+    assert status["rate"] == 44100
+    time.sleep(0.1)
+    assert len(_restart_calls) == 2, "falling back to 44.1kHz changes the rate: downstream must restart"
+    print("  no loopback device -> recording device, reason reported OK")
+
+    fake = _CableFakePyAudio(cable_channels=6)   # cable switched to a surround format
+    chunks, status, _ = _capture_for(fake, 0.2)
+    assert fake.opened == [0] and status["method"] == "recording", (fake.opened, status)
+    assert "6 channels" in status["fallback_reason"], status
+    print("  non-stereo loopback -> recording device OK")
+
+    fake = _CableFakePyAudio()
+    fake.fail_loopback_open = True
+    chunks, status, _ = _capture_for(fake, 1.0, fast_sleep=True)
+    n_fail = audio_engine._LOOPBACK_OPEN_FAILURES_BEFORE_FALLBACK
+    assert fake.opened == [1] * n_fail + [0], f"expected {n_fail} loopback attempts then the recording device, got {fake.opened}"
+    assert status["method"] == "recording" and "would not open" in status["fallback_reason"], status
+    assert chunks, "audio must flow on the fallback device"
+    print("  loopback that won't open -> recording device after retries OK")
+
+    # (f) the explicit "recording" setting never touches loopback
+    audio_engine.config["capture_method"] = "recording"
+    fake = _CableFakePyAudio()
+    chunks, status, _ = _capture_for(fake, 0.2)
+    assert fake.opened == [0] and status["method"] == "recording" and status["fallback_reason"] is None, (fake.opened, status)
+    print("  capture_method=recording opens only the recording device OK")
+
+    # (g) dashboard API: validation, switching (which restarts capture), status
+    audio_engine.config["capture_method"] = "loopback"
+    fake = _CableFakePyAudio()
+    fake.loopback_chunks = 10 ** 9
+    audio_engine._pa = fake
+    r = client.post("/api/capture_method", json={"method": "bogus"})
+    assert r.status_code == 400
+    r = client.post("/api/capture_method", json={"method": "recording"})
+    body = r.get_json()
+    assert r.status_code == 200 and body["ok"] and body["configured"] == "recording", body
+    assert body["capture"]["method"] == "recording", body
+    assert webapp.config["capture_method"] == "recording"
+    r = client.post("/api/capture_method", json={"method": "loopback"})
+    body = r.get_json()
+    assert body["configured"] == "loopback" and body["capture"]["method"] == "loopback", body
+    assert body["capture"]["device"].endswith("[Loopback]") and body["capture"]["rate"] == 48000, body
+    r = client.get("/api/capture_method")
+    assert r.get_json()["supported"] is True
+    r = client.get("/api/platform_status")
+    assert r.get_json()["capture"]["method"] == "loopback"
+    import diagnostics as _diagnostics_mod  # noqa: E402
+    snap = _diagnostics_mod.system_snapshot()
+    assert "Audio capture: loopback from 'CABLE Input" in snap and "capture_method=loopback" in snap, snap
+    assert b'id="captureMethod"' in client.get("/").data
+    print("  /api/capture_method, /api/platform_status, diagnostics OK")
+finally:
+    audio_engine._pa = _real_pa
+    audio_engine.time = _real_engine_time
+    audio_engine._restart_downstream = _real_restart_downstream
+    audio_engine.config["sample_rate"], audio_engine.config["channels"] = _saved_format
+    for _t, _ev in ((audio_engine._capture_thread, audio_engine._capture_stop_event),
+                    (audio_engine._render_thread, audio_engine._render_stop_event)):
+        if _ev is not None:
+            _ev.set()
+        if _t is not None:
+            _t.join(timeout=3)
+    for _k, _v in _saved_capture_cfg.items():
+        audio_engine.config[_k] = _v
+
+assert DEFAULT_CONFIG["capture_method"] == ("loopback" if sys.platform == "win32" else "recording"), \
+    "Windows defaults to loopback (no microphone access); other platforms have no such option"
+
+# the real downstream restart (render path + Sonos reconnect) must run cleanly with no speakers around
+audio_engine._restart_downstream()
+time.sleep(0.2)
+audio_engine._render_stop_event.set()
+audio_engine._render_thread.join(timeout=3)
+print("  OK")
 
 wav = webapp.wav_header(44100, 2, 2)
 assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE" and b"fmt " in wav and b"data" in wav

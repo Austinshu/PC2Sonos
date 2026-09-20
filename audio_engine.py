@@ -3,8 +3,10 @@ Audio capture / delay / render engine.
 
 Pipeline:
   Windows apps -> "CABLE Input" (virtual device, becomes your Windows
-  default output) -> we capture from "CABLE Output" (the matching
-  virtual recording device) -> fan out to:
+  default output) -> we capture what's playing into it via WASAPI
+  loopback (or, if loopback can't be used, from "CABLE Output", the
+  matching virtual recording device -- see _capture_loop_system for why
+  loopback is preferred) -> fan out to:
       (a) a delayed render thread that writes to your REAL speakers,
           held back by config['local_delay_ms'] so it lines up with
       (b) one HTTP stream per enabled Sonos speaker (undelayed on our
@@ -19,6 +21,7 @@ tune local_delay_ms until they land together.
 import audioop
 import math
 import queue
+import re
 import socket
 import sys
 import threading
@@ -123,10 +126,30 @@ def find_device_index(substr, want_input):
             continue
         name = info.get("name", "")
         if substr_l in name.lower():
-            if want_input and info.get("maxInputChannels", 0) > 0:
+            # pyaudiowpatch lists every playback device's loopback endpoint
+            # as an input too. That's find_loopback_device's job -- this
+            # lookup is for real recording devices, and opening a loopback
+            # one through the blocking recording read would hang whenever
+            # nothing is playing to it.
+            if want_input and info.get("maxInputChannels", 0) > 0 and not info.get("isLoopbackDevice"):
                 return i, info
             if not want_input and info.get("maxOutputChannels", 0) > 0:
                 return i, info
+    return None, None
+
+
+def find_loopback_device(substr):
+    """The WASAPI loopback endpoint of the playback device whose name
+    contains `substr`. pyaudiowpatch lists one of these next to every
+    playback device, named "<device> [Loopback]" and flagged
+    isLoopbackDevice; there is no such flag on macOS's sounddevice
+    wrapper, so this simply finds nothing there."""
+    substr_l = substr.lower()
+    for i in range(_pa.get_device_count()):
+        info = _pa.get_device_info_by_index(i)
+        if (info.get("isLoopbackDevice") and info.get("maxInputChannels", 0) > 0
+                and substr_l in info.get("name", "").lower()):
+            return i, info
     return None, None
 
 
@@ -348,8 +371,7 @@ def _capture_loop_apps(stop_event):
         return
     live_pids = {s["name"].lower(): s["pid"] for s in sessions}
 
-    config["sample_rate"] = _APP_CAPTURE_RATE
-    config["channels"] = _APP_CAPTURE_CHANNELS
+    _publish_capture_format(_APP_CAPTURE_RATE, _APP_CAPTURE_CHANNELS)
 
     def run_source(src, pid):
         try:
@@ -382,6 +404,8 @@ def _capture_loop_apps(stop_event):
 
     print(f"[audio] mixing {len(sources)}/{len(targets)} selected app(s) into the Sonos "
           f"stream -- everything else on this PC stays out of it")
+    _set_capture_status("apps", "selected apps (process loopback)",
+                        _APP_CAPTURE_RATE, _APP_CAPTURE_CHANNELS)
     try:
         next_tick = time.monotonic()
         next_rescan = next_tick + _APP_RESCAN_INTERVAL_S
@@ -421,6 +445,7 @@ def _capture_loop_apps(stop_event):
             else:
                 next_tick = time.monotonic()  # fell behind -- resync instead of free-running
     finally:
+        _set_capture_status()
         for src in sources.values():
             src.stop_event.set()
         for src in sources.values():
@@ -428,11 +453,217 @@ def _capture_loop_apps(stop_event):
                 src.thread.join(timeout=2)
 
 
+# What the system-capture loop is reading from right now, for the
+# dashboard and the diagnostics snapshot. "method" is what is actually in
+# use ("loopback", "recording", or "apps"), which differs from
+# config["capture_method"] whenever loopback had to fall back -- and
+# "fallback_reason" says why.
+_capture_status = {"method": None, "device": None, "rate": None,
+                   "channels": None, "fallback_reason": None}
+
+
+def _set_capture_status(method=None, device=None, rate=None, channels=None, fallback_reason=None):
+    _capture_status.update(method=method, device=device, rate=rate,
+                           channels=channels, fallback_reason=fallback_reason)
+
+
+def _restart_downstream():
+    """Restart everything that latched the capture format when it started:
+    the delayed local render session (it reads config['sample_rate'] and
+    ['channels'] once per session) and every Sonos stream currently
+    playing ours (its WAV header was written from the format at the moment
+    THAT connection began, and can't be corrected mid-stream). Without
+    this, they'd keep decoding the new capture bytes as the old format.
+
+    Sonos goes first. At startup nothing is streaming yet, so that's a
+    no-op, and doing it BEFORE the slower render restart means a stream the
+    launch sequence is just about to start begins with the right format,
+    instead of being knocked over halfway through starting."""
+    try:
+        from sonos_ctl import speaker_mgr
+        speaker_mgr.reconnect_all_streaming(f"http://{get_lan_ip()}:{config['http_port']}")
+    except Exception as e:
+        print(f"[audio] couldn't resync Sonos streams after a capture format change: {e}")
+    try:
+        restart_render()
+    except Exception as e:
+        print(f"[audio] couldn't restart the local speaker path after a capture format change: {e}")
+
+
+def _publish_capture_format(rate, channels):
+    """Record the sample rate/channel count the capture stream is really
+    delivering, once it is actually open. If that differs from what
+    config held a moment ago, whatever already started (the local render
+    path, a Sonos stream) latched the old format -- restart those.
+
+    This is the one place the format changes, and it matters more now than
+    it used to: the recording device always arrived at 44.1kHz, matching
+    the value config.json was left holding, but WASAPI loopback arrives at
+    the cable's own mix rate (48kHz here), and a fallback from one method
+    to the other changes the rate mid-run."""
+    changed = config.get("sample_rate") != rate or config.get("channels") != channels
+    config["sample_rate"] = rate
+    config["channels"] = channels
+    if changed:
+        # saved, so only the first launch after a change (e.g. upgrading from
+        # the 44.1kHz recording device to 48kHz loopback) has anything to
+        # restart -- every later launch already finds the right format here
+        from config import save_config
+        try:
+            save_config(config)
+        except Exception as e:
+            print(f"[audio] couldn't save the capture format: {e}")
+        print(f"[audio] capture format is {rate}Hz x{channels}ch -- restarting the local "
+              f"speaker path and Sonos streams so they use it")
+        threading.Thread(target=_restart_downstream, daemon=True).start()
+
+
+def get_capture_status():
+    status = dict(_capture_status)
+    status["configured"] = config.get("capture_method", "recording")
+    return status
+
+
+def _loopback_wanted():
+    # Only pyaudiowpatch can do WASAPI loopback; macOS's sounddevice wrapper
+    # (audio_backend.py) has nothing equivalent.
+    return pyaudio.BACKEND == "pyaudiowpatch" and config.get("capture_method") == "loopback"
+
+
+def _loopback_render_substr():
+    """The playback side of the cable whose recording side is named by
+    capture_device_substr: VB-Audio pairs "CABLE Output" (recording) with
+    "CABLE Input" (playback), and the same naming holds for its other
+    cables ("CABLE-A Output" / "CABLE-A Input")."""
+    return re.sub("output", "Input", config["capture_device_substr"], flags=re.IGNORECASE)
+
+
+def _pick_loopback_device():
+    """(index, info, None) for the cable's loopback endpoint, or
+    (None, None, why-not)."""
+    substr = _loopback_render_substr()
+    idx, info = find_loopback_device(substr)
+    if idx is None:
+        return None, None, f"no loopback device matching '{substr}'"
+    channels = int(info.get("maxInputChannels", 0))
+    if channels not in (1, 2):
+        # Windows hands loopback capture the endpoint's own channel layout
+        # (unlike the recording device, which it converts to stereo for
+        # us). The virtual cable is stereo unless someone changed its
+        # format in the Sound control panel; not worth a surround downmix.
+        return None, None, f"'{info['name']}' is set to {channels} channels (needs stereo)"
+    return idx, info, None
+
+
+# Loopback only: how long without a single packet from Windows before we
+# start feeding the streams silence ourselves, and how often the read loop
+# checks for new packets.
+_LOOPBACK_IDLE_GRACE_S = 0.3
+_LOOPBACK_POLL_S = 0.005
+_LOOPBACK_MAX_CHUNKS_PER_POLL = 8
+_LOOPBACK_OPEN_FAILURES_BEFORE_FALLBACK = 3
+
+
+def _read_loop_recording(stream, stop_event):
+    """Blocking reads from the cable's recording device, which always
+    delivers -- a stream of silence when nothing is playing. Returns the
+    number of consecutive read errors it ended on (5 = the stream is dead)."""
+    consecutive_errors = 0
+    while not stop_event.is_set() and consecutive_errors < 5:
+        try:
+            data = stream.read(CHUNK, exception_on_overflow=False)
+        except Exception as e:
+            consecutive_errors += 1
+            print(f"[audio] capture error: {e}")
+            time.sleep(0.5)
+            continue
+        consecutive_errors = 0
+        broadcaster.publish(data)
+    return consecutive_errors
+
+
+def _read_loop_loopback(stream, stop_event, rate, channels):
+    """Reads a WASAPI loopback stream WITHOUT ever blocking inside
+    PortAudio, unlike _read_loop_recording -- for two reasons found by
+    testing on a real PC:
+
+      * Windows only sends loopback data while something is actually
+        playing to that endpoint. Real playback devices (speakers,
+        headphones) send nothing at all when idle, and VB-Cable's endpoint
+        does not stall only because its driver keeps its own clock
+        running -- not something to bet every Windows version on. A
+        blocking read on a silent endpoint never returns, which would
+        starve every Sonos stream the moment nothing is playing. So poll
+        for available frames instead, and once Windows has sent nothing
+        for a moment, publish real-time silence ourselves until it does.
+      * A read blocked inside PortAudio can't be interrupted -- closing the
+        stream from another thread returns at once but leaves that read
+        (and its thread) stuck -- so a stalled loopback would otherwise
+        make restart_capture() unable to stop this thread.
+
+    Returns the number of consecutive errors it ended on, like
+    _read_loop_recording."""
+    silence = b"\x00" * (CHUNK * channels * 2)  # 16-bit samples
+    chunk_seconds = CHUNK / float(rate)
+    consecutive_errors = 0
+    last_data = time.monotonic()
+    next_silence = None
+    announced_idle = False
+    while not stop_event.is_set() and consecutive_errors < 5:
+        got_data = False
+        try:
+            reads = 0
+            while reads < _LOOPBACK_MAX_CHUNKS_PER_POLL and stream.get_read_available() >= CHUNK:
+                broadcaster.publish(stream.read(CHUNK, exception_on_overflow=False))
+                reads += 1
+                got_data = True
+        except Exception as e:
+            consecutive_errors += 1
+            print(f"[audio] capture error: {e}")
+            time.sleep(0.5)
+            continue
+        consecutive_errors = 0
+
+        now = time.monotonic()
+        if got_data:
+            last_data = now
+            next_silence = None
+        elif now - last_data >= _LOOPBACK_IDLE_GRACE_S:
+            if not announced_idle:
+                announced_idle = True
+                print("[audio] loopback stream is idle (Windows sends no audio while nothing "
+                      "is playing) -- feeding silence so the speakers' streams stay alive")
+            if next_silence is None or now - next_silence > 0.5:
+                next_silence = now  # first idle chunk, or we were suspended: don't replay the gap
+            while next_silence <= now:
+                broadcaster.publish(silence)
+                next_silence += chunk_seconds
+        time.sleep(_LOOPBACK_POLL_S)
+    return consecutive_errors
+
+
 def _capture_loop_system(stop_event):
     """Reads PCM from the virtual cable and publishes it to the
     broadcaster -- the single source both the Sonos streams and the local
     delayed-render path draw from, so if this stops, everything downstream
     goes silent no matter what any setting (including the delay) is.
+
+    On Windows there are two ways to read the cable, chosen by
+    config["capture_method"]:
+
+      * "loopback" (default): WASAPI loopback of "CABLE Input", the
+        playback device Windows apps are already sending audio to.
+        Windows does not count this as microphone access.
+      * "recording": open "CABLE Output", the cable's *recording* device.
+        It carries exactly the same audio, but Windows treats every
+        recording device as a microphone -- listing the app under
+        Privacy > Microphone and showing the mic as in use for as long
+        as PC2Sonos runs, which people rightly find alarming. This is
+        also what loopback falls back to if it can't be used (no such
+        loopback device, it won't open, or it isn't stereo), so audio
+        never stops working just because the newer method didn't.
+
+    On macOS BlackHole is read as an input device, the "recording" path.
 
     Self-healing: if the capture stream ever errors out for good (a
     driver hiccup, the device briefly grabbed elsewhere, sleep/wake),
@@ -444,9 +675,21 @@ def _capture_loop_system(stop_event):
     with no recovery short of relaunching the whole app by hand."""
     attempt = 0
     warned_missing = False
+    loopback_open_failures = 0
+    loopback_gave_up = None  # why this run stopped trying loopback, if it did
     while not stop_event.is_set():
-        idx, info = find_device_index(config["capture_device_substr"], want_input=True)
+        fallback_reason = None
+        use_loopback = _loopback_wanted() and loopback_gave_up is None
+        if use_loopback:
+            idx, info, fallback_reason = _pick_loopback_device()
+            use_loopback = idx is not None
+        elif _loopback_wanted():
+            fallback_reason = loopback_gave_up
+        if not use_loopback:
+            idx, info = find_device_index(config["capture_device_substr"], want_input=True)
+
         if idx is None:
+            _set_capture_status()
             if sys.platform == "darwin":
                 hint = "install BlackHole (brew install --cask blackhole-2ch)"
             else:
@@ -465,39 +708,46 @@ def _capture_loop_system(stop_event):
         warned_missing = False
         rate = int(info.get("defaultSampleRate", config["sample_rate"]))
         channels = min(int(info.get("maxInputChannels", 2)), 2)
-        config["sample_rate"] = rate
-        config["channels"] = channels
 
         try:
             stream = _pa.open(format=pyaudio.paInt16, channels=channels, rate=rate,
                                input=True, input_device_index=idx, frames_per_buffer=CHUNK)
         except Exception as e:
             attempt += 1
+            if use_loopback:
+                loopback_open_failures += 1
+                if loopback_open_failures >= _LOOPBACK_OPEN_FAILURES_BEFORE_FALLBACK:
+                    loopback_gave_up = f"'{info['name']}' would not open ({e})"
+                    print(f"[audio] loopback capture failed {loopback_open_failures} times "
+                          f"({e}); switching to the recording device for this run")
+                    continue
             wait = min(2 * attempt, 10)
             print(f"[audio] capture device open failed ({e}); retrying in {wait}s (attempt {attempt})")
             time.sleep(wait)
             continue
 
-        print(f"[audio] capturing from: {info['name']} @ {rate}Hz x{channels}ch")
+        if use_loopback:
+            print(f"[audio] capturing from: {info['name']} @ {rate}Hz x{channels}ch (WASAPI loopback)")
+        else:
+            why = f" -- loopback unavailable: {fallback_reason}" if fallback_reason else ""
+            print(f"[audio] capturing from: {info['name']} @ {rate}Hz x{channels}ch{why}")
+        _publish_capture_format(rate, channels)
+        _set_capture_status("loopback" if use_loopback else "recording",
+                            info["name"], rate, channels, fallback_reason)
         attempt = 0
-        consecutive_errors = 0
+        loopback_open_failures = 0
 
-        while not stop_event.is_set() and consecutive_errors < 5:
-            try:
-                data = stream.read(CHUNK, exception_on_overflow=False)
-            except Exception as e:
-                consecutive_errors += 1
-                print(f"[audio] capture error: {e}")
-                time.sleep(0.5)
-                continue
-            consecutive_errors = 0
-            broadcaster.publish(data)
+        if use_loopback:
+            consecutive_errors = _read_loop_loopback(stream, stop_event, rate, channels)
+        else:
+            consecutive_errors = _read_loop_recording(stream, stop_event)
 
         try:
             stream.stop_stream()
             stream.close()
         except Exception:
             pass
+        _set_capture_status()
 
         if consecutive_errors >= 5:
             print("[audio] capture stream looks dead after repeated errors; reopening it")
@@ -569,9 +819,17 @@ def _apply_local_gain(pcm_bytes, gain):
     near 0dBFS), so even a modest boost could push a meaningful chunk of
     samples straight into a hard ceiling -- the soft knee means raising
     the slider actually feels like a smooth volume increase across its
-    whole range instead of clean, then suddenly blown out."""
-    arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) * (gain / 32768.0)
-    return (_soft_limit(arr) * 32767.0).astype(np.int16).tobytes()
+    whole range instead of clean, then suddenly blown out.
+
+    At or below 1.0 this is the dashboard's plain volume control, so it is
+    a straight linear scale: nothing can exceed full scale when turning
+    down, and running the limiter anyway would squash loud peaks even
+    while making the sound quieter (a 90% volume would still compress a
+    full-scale peak to about 82%)."""
+    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    if gain <= 1.0:
+        return np.clip(samples * gain, -32768, 32767).astype(np.int16).tobytes()
+    return (_soft_limit(samples * (gain / 32768.0)) * 32767.0).astype(np.int16).tobytes()
 
 
 # Bass/mid/treble EQ for the LOCAL speaker path only. Sonos speakers
@@ -869,27 +1127,29 @@ def start_audio_engine(stop_event):
         _render_thread.start()
 
 
-def restart_capture(new_mode=None, new_target_names=None):
+def restart_capture(new_mode=None, new_target_names=None, new_method=None):
     """Stop the current capture thread and start a new one, picking up a
     newly-chosen audio source (whole system vs. one or more selected
-    apps). Used by the dashboard's audio-source picker.
+    apps) or capture method (Windows loopback vs. the recording device).
+    Used by the dashboard's audio-source picker and capture-method switch.
 
-    Whole-system and per-app capture run at different, hardcoded sample
-    rates (see per_app_audio.py) -- so switching between them changes the
-    actual PCM format on the fly. Restart the render thread (it only reads
-    config['sample_rate']/['channels'] once, at the start of each render
-    session) and force every currently-streaming Sonos speaker to
-    reconnect (its WAV header was generated from whatever the format was
-    when THAT connection started, and there's no way to update it mid-
-    stream) so nothing downstream is left decoding new-format bytes
-    against a stale format."""
+    Whole-system and per-app capture run at different sample rates (see
+    per_app_audio.py), and loopback at the cable's own mix rate rather than
+    the 44.1kHz Windows converts the recording device to -- so switching
+    can change the actual PCM format on the fly. That is handled where the
+    new format is actually known, once the new stream is open (see
+    _publish_capture_format): it restarts the local render path and the
+    Sonos streams only if the format really changed, so a switch between
+    two sources with the same format doesn't interrupt anything."""
     global _capture_stop_event, _capture_thread
     from config import save_config
     if new_mode is not None:
         config["capture_mode"] = new_mode
     if new_target_names is not None:
         config["capture_target_names"] = new_target_names
-    if new_mode is not None or new_target_names is not None:
+    if new_method is not None:
+        config["capture_method"] = new_method
+    if new_mode is not None or new_target_names is not None or new_method is not None:
         save_config(config)
     with _capture_lock:
         if _capture_stop_event is not None:
@@ -899,12 +1159,6 @@ def restart_capture(new_mode=None, new_target_names=None):
         _capture_stop_event = threading.Event()
         _capture_thread = threading.Thread(target=capture_loop, args=(_capture_stop_event,), daemon=True)
         _capture_thread.start()
-    restart_render()
-    try:
-        from sonos_ctl import speaker_mgr
-        speaker_mgr.reconnect_all_streaming(f"http://{get_lan_ip()}:{config['http_port']}")
-    except Exception as e:
-        print(f"[audio] couldn't resync Sonos streams after a capture-source change: {e}")
 
 
 def restart_render(new_device_substr=None):

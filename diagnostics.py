@@ -174,6 +174,18 @@ def system_snapshot():
         lines.append(f"Windows default playback device: {default_out}")
     lines.append(f"PC-speaker (delayed) render device in use: "
                  f"{get_current_render_device_name() or 'none picked yet'}")
+    try:
+        from audio_engine import get_capture_status
+        cap = get_capture_status()
+        if cap["method"]:
+            lines.append(f"Audio capture: {cap['method']} from '{cap['device']}' "
+                         f"@ {cap['rate']}Hz x{cap['channels']}ch (configured: {cap['configured']})")
+        else:
+            lines.append(f"Audio capture: not capturing right now (configured: {cap['configured']})")
+        if cap.get("fallback_reason"):
+            lines.append(f"  loopback fell back to the recording device: {cap['fallback_reason']}")
+    except Exception as e:
+        lines.append(f"Audio capture: couldn't check ({type(e).__name__}: {e})")
 
     lines.append("Output devices seen by PC2Sonos:")
     try:
@@ -211,7 +223,8 @@ def system_snapshot():
 
     lines.append(f"Config: local_delay_ms={config.get('local_delay_ms')} "
                  f"http_port={config.get('http_port')} "
-                 f"sonos_stream_quality={config.get('sonos_stream_quality', 'full')}")
+                 f"sonos_stream_quality={config.get('sonos_stream_quality', 'full')} "
+                 f"capture_method={config.get('capture_method', 'recording')}")
     try:
         from config import PASSWORD_PATH
         # report only whether it's set, never the value

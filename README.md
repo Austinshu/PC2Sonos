@@ -11,15 +11,18 @@ streaming tool" combo with one thing that just runs at startup:
   subnet/IoT VLAN that normal discovery can't reach.
 - Streams your PC's audio to whichever ones you enable, with individual
   volume control per speaker.
+- Doesn't touch your microphone: on Windows it reads what's playing by
+  loopback rather than opening a recording device, so the microphone
+  indicator stays off (see "Does PC2Sonos use your microphone?" below).
 - Choose what gets streamed: the whole system (default), or just one
   application's audio, so the rest of your PC's sound stays off Sonos.
 - Delays your PC's *own* local speakers to match Sonos's playback delay,
   so the two don't echo each other -- you set the offset once (or let
   auto-calibration find it) and it stays put, with a periodic background
   resync so it doesn't quietly drift over a long-running session.
-- A volume boost for a quiet aux/line-out PC speaker, independent of
-  Windows' own volume (which only controls what gets captured, not what
-  that device plays back).
+- A volume slider for your PC speakers, right next to the output picker on
+  the dashboard, that also goes past 100% to boost a quiet aux/line-out
+  speaker.
 - A dashboard that shows what's actually happening at a glance --
   how many speakers are streaming, your current sync delay, which PC
   output device is active, and a live input level meter -- instead of
@@ -50,33 +53,39 @@ lags behind, so you hear the same audio twice. PC2Sonos holds your local
 speaker output back by a matching amount so both play together -- same
 idea as the "audio delay" / lip-sync offset setting on an AV receiver.
 
-## Why Windows shows PC2Sonos using your microphone
+## Does PC2Sonos use your microphone? (Windows)
 
-PC2Sonos captures your PC's audio by reading from VB-Audio Virtual
-Cable's "CABLE Output" -- a virtual recording device, not a real
-microphone. Windows has no separate permission category for that,
-though: any app that opens *any* input-class device for capture, real
-mic or virtual, is gated behind the same "Microphone" privacy
-permission, and Windows considers that access ongoing for as long as
-the connection is open -- which for PC2Sonos is the entire time it's
-running, not just for a moment. That's also why you may see PC2Sonos
-listed under Settings > Privacy & Security > Microphone as an app
-that's used it.
+No. PC2Sonos gets your PC's audio by *loopback* capture of VB-Audio
+Virtual Cable's playback side ("CABLE Input" -- the device Windows sends
+your sound to), which Windows does not treat as microphone access. So
+PC2Sonos isn't listed under Settings > Privacy & security > Microphone as
+an app that's using it, and the microphone-in-use indicator stays off.
+It also never captures your room or your voice: the only thing the cable
+ever carries is your PC's own audio on its way to Sonos.
 
-Nothing about your room or your voice is ever captured through this
-path -- it only ever carries your PC's own audio, redirected through
-the virtual cable on its way to Sonos. The one thing that *does*
-briefly use a real microphone is the optional "Calibrate with test
-tone" button on the dashboard: a manual, ~6-second recording, off by
-default (the default Auto calibration measures Sonos's own playback
-clock instead and never touches a microphone, real or virtual, at
-all).
+Up to and including v1.4.5, PC2Sonos captured differently: it opened the
+cable's *recording* side ("CABLE Output"). That carries the identical
+audio, but Windows classes every recording device as a microphone, so it
+showed the microphone as in use for as long as PC2Sonos was running -- a
+fair thing to find alarming, even though it was never a real microphone.
+You can still see that behavior in two cases, and the dashboard says so:
 
-There's no way around holding the permission continuously while using
-this architecture -- revoking it (or Windows' "Let desktop apps access
-your microphone" master switch) silences PC2Sonos entirely, the same
-way denying the equivalent macOS permission does, for the same
-underlying reason (see the macOS section below).
+- PC2Sonos falls back to the recording device by itself if loopback can't
+  be used (the cable's loopback device is missing or won't open, or the
+  cable has been switched to a surround format). Audio keeps working, and
+  an orange notice at the top of the dashboard says why.
+- You picked **Recording device** under Advanced > Capture method. There's
+  no reason to unless loopback ever gives you silence.
+
+The one thing that *does* briefly use a real microphone is the optional
+"Calibrate with test tone" button on the dashboard: a manual, ~6-second
+recording, off by default (the default Auto calibration measures Sonos's
+own playback clock instead and never touches a microphone, real or
+virtual, at all). Per-app capture ("Audio source" under Advanced) doesn't
+use a microphone either.
+
+macOS is different -- it has no loopback equivalent, so it still has to
+read BlackHole as an input; see the macOS section below.
 
 ## Why the update checker exists
 
@@ -148,26 +157,30 @@ an app doesn't produce sound, uncheck it and use "Whole system" instead.
 Each checked app joins or drops out of the mix independently as you open
 and close it -- one app not being capturable, or not running yet, doesn't
 stop the others from streaming. Switching between "Whole system" and any
-app selection briefly reconnects Sonos and the local speaker path, since
-the two capture modes run at different audio sample rates.
+app selection briefly reconnects Sonos and the local speaker path only if
+the two capture modes end up at different audio sample rates (per-app
+capture is always 48 kHz; whole-system capture runs at your virtual
+cable's own rate, which is usually 48 kHz too, in which case nothing
+interrupts).
 
-### Optional: boost a quiet local speaker
+### PC speaker volume, and boosting a quiet local speaker
 
-Windows' own volume control only affects what PC2Sonos *captures* -- it
-has no effect on what PC2Sonos plays back afterward through your real PC
-speakers/headphones. If that device sounds too quiet even at 100%
-Windows volume (common with a passive speaker on a line-level aux input),
-use the **PC speaker volume boost** slider next to the device picker.
-100% is the original, unchanged passthrough -- that's also the ceiling
-of the safe/no-warning zone. The slider goes up to 500%, using a soft
-limiter rather than a hard clip above 100% so loud peaks compress
-gradually as they approach full scale instead of slamming flat; the
-dashboard shows a warning past 100% as a reminder that you're past the
-source's natural level, not because anything's about to break. This
-only affects the local speaker path; Sonos speakers keep their own
-independent volume control.
+The **Volume** slider in the PC speaker output card (right under the
+output picker) sets how loud PC2Sonos plays the delayed audio through
+your real PC speakers/headphones, on top of Windows' own volume for that
+device. 100% is the original, unchanged level and dragging down simply
+turns it down. It only affects the local speaker path; Sonos speakers
+keep their own independent volume control.
 
-There's also a **bass/mid/treble EQ** right below it, local speaker path
+If that device still sounds too quiet at full Windows volume (common
+with a passive speaker on a line-level aux input), go above 100%: the
+slider goes up to 500%, using a soft limiter rather than a hard clip so
+loud peaks compress gradually as they approach full scale instead of
+slamming flat. 100% is also the ceiling of the safe/no-warning zone; the
+dashboard shows a warning past it as a reminder that you're past the
+source's natural level.
+
+There's also a **bass/mid/treble EQ** under Advanced, local speaker path
 only (Sonos speakers keep their own EQ in the Sonos app) -- a low shelf
 at 200Hz, a peak at 1000Hz, and a high shelf at 5000Hz, each up to
 &plusmn;24dB: a fully adjustable bass shelf well beyond the fixed,
@@ -179,7 +192,7 @@ bass." The EQ soft-limits its own output too (same as the boost), so
 even a large boost on one band compresses gracefully instead of
 hard-clipping.
 
-**100% boost / 0dB EQ (the defaults) is what we recommend.** Both
+**100% volume / 0dB EQ (the defaults) is what we recommend.** Both
 controls go well past that on purpose, for cases like an underpowered
 aux speaker that genuinely needs it -- but pushing either far enough can
 stress or damage underpowered speakers/amps over time, not just change
@@ -224,8 +237,8 @@ Sonos (44.1kHz -> 22kHz) -- meaningfully less data for a weak link to
 keep up with, at the cost of slightly less crisp highs. This only
 changes what's sent to Sonos; your PC's own speakers always stay at full
 quality. Switching it forces every currently-streaming speaker to
-reconnect at the new rate (the same brief reconnect blip as switching
-capture modes), so expect one short glitch right after you change it.
+reconnect at the new rate, so expect one short glitch right after you
+change it.
 
 ### Optional: start faster after a reboot
 
@@ -403,9 +416,10 @@ is shared with tools like SWYH.
 - `install.sh` / `uninstall.sh` / `build_macos_app.sh` -- macOS install and
   .app build (see "macOS" above)
 - `test_macos.py` -- Linux-runnable tests for the macOS layer
-- `audio_engine.py` -- WASAPI capture from the virtual cable (or, in
-  per-app mode, `per_app_audio.py`), delayed + volume-boosted render to
-  your real speakers, fan-out to Sonos streams
+- `audio_engine.py` -- WASAPI loopback capture of the virtual cable (with
+  a fallback to its recording device, and `per_app_audio.py` in per-app
+  mode), delayed + volume-boosted render to your real speakers, fan-out to
+  Sonos streams
 - `per_app_audio.py` -- per-application capture via Windows' process-
   loopback WASAPI extension, for the "stream only specific apps" option
 - `sonos_ctl.py` -- Sonos discovery/control via SoCo, including the

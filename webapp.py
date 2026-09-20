@@ -449,6 +449,24 @@ DASHBOARD_HTML = """
     <div class="card-desc">This is the key setting for keeping your PC's own speakers in sync with Sonos: it's WHICH physical speaker/headphones PC2Sonos plays the delayed audio to. PC2Sonos auto-picks the first real output it finds, which is usually right -- but if your PC speakers don't seem to be playing the delayed feed at all, or you have more than one output connected (headphones + speakers, a monitor's speakers, etc.), check this first before touching anything else below. (Virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list -- they're never a real speaker.)</div>
   </details>
   <select id="renderDevice" onchange="setDevice()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
+  <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+    <label style="margin-bottom:2px;">Volume</label>
+    <details class="info-toggle">
+      <summary>&#9432; What does this do?</summary>
+      <div class="card-desc">How loud PC2Sonos plays the delayed audio through the device above, on top of Windows' own volume for it. 100% is the original level and lower turns it down. If an aux/line-out speaker is too quiet even at full Windows volume, go above 100%: that amplifies the signal with a soft limiter, so loud peaks compress gradually instead of clipping. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top.</div>
+    </details>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <input type="range" min="0" max="500" step="1" id="localGain" value="{{local_gain_percent}}"
+             oninput="syncLocalGain('slider')" onchange="setLocalGain()" style="flex:1; min-width:150px;">
+      <input type="number" min="0" max="500" step="1" id="localGainNum" value="{{local_gain_percent}}"
+             oninput="syncLocalGain('number')" onchange="setLocalGain()"
+             style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+      <span>%</span>
+    </div>
+    <div id="localGainWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:6px;">
+      &#9888; Above 100% amplifies past the source's natural level. Pushed far enough it can stress or damage underpowered speakers and amps over time &mdash; 100% is what we recommend.
+    </div>
+  </div>
 </div>
 
 <div class="card">
@@ -503,37 +521,16 @@ DASHBOARD_HTML = """
   <summary style="cursor:pointer; padding:16px 18px;">
     <span class="card-header" style="margin-bottom:0; display:inline-flex;">
       <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="4" x2="5" y2="20"/><circle cx="5" cy="9" r="2" fill="currentColor" stroke="none"/><line x1="12" y1="4" x2="12" y2="20"/><circle cx="12" cy="15" r="2" fill="currentColor" stroke="none"/><line x1="19" y1="4" x2="19" y2="20"/><circle cx="19" cy="7" r="2" fill="currentColor" stroke="none"/></svg></span>
-      <span class="card-title">Advanced: volume boost, EQ &amp; audio source</span>
+      <span class="card-title">Advanced: EQ, audio source &amp; capture method</span>
     </span>
   </summary>
   <div style="padding:14px 18px 16px;">
     <div style="font-size:11px; color:#999; line-height:1.5;">
-      The volume boost and EQ below can push your speakers harder than their
-      intended level, and pushing either far enough can stress or damage
-      underpowered speakers/amps over time. <strong>The defaults (100%
-      boost, 0dB EQ) are what we recommend</strong> -- adjusting past them
-      is at your own risk to your hardware, not just audio quality.
-    </div>
-    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
-      <label style="margin-bottom:2px;">PC speaker volume boost</label>
-      <details class="info-toggle">
-        <summary>&#9432; What does this do?</summary>
-        <div class="card-desc">Windows' own volume only controls what PC2Sonos captures, not what this device plays back; use this if an aux/line-out speaker is too quiet even at 100% Windows volume.</div>
-      </details>
-      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-        <input type="range" min="0" max="500" step="1" id="localGain" value="{{local_gain_percent}}"
-               oninput="syncLocalGain('slider')" onchange="setLocalGain()" style="flex:1; min-width:150px;">
-        <input type="number" min="0" max="500" step="1" id="localGainNum" value="{{local_gain_percent}}"
-               oninput="syncLocalGain('number')" onchange="setLocalGain()"
-               style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
-        <span>%</span>
-      </div>
-      <div style="font-size:11px; color:#777; margin-top:6px;">
-        100% = unchanged passthrough (the original behavior). Above 100% amplifies the signal with a soft limiter -- loud peaks compress gradually instead of clipping, so it stays clean well past 100%.
-      </div>
-      <div id="localGainWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:4px;">
-        &#9888; Above 100% is past the source's natural level -- the higher you go, the more the limiter has to compress to stay clean.
-      </div>
+      The EQ below can push your speakers harder than their intended level,
+      and pushing it far enough can stress or damage underpowered
+      speakers/amps over time. <strong>The default (0dB) is what we
+      recommend</strong> -- adjusting past it is at your own risk to your
+      hardware, not just audio quality.
     </div>
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
       <label style="margin-bottom:2px;">PC speaker EQ</label>
@@ -584,6 +581,18 @@ DASHBOARD_HTML = """
       </label>
       <div id="captureAppList" style="display:flex; flex-direction:column; gap:2px; max-height:180px; overflow-y:auto; margin-top:4px; padding:6px; background:#111; border:1px solid #333; border-radius:6px;"></div>
       <div id="captureSourceResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
+    </div>
+    <div id="captureMethodBlock" style="display:none; margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+      <label style="margin-bottom:2px;">Capture method &mdash; how PC2Sonos reads your PC's audio</label>
+      <details class="info-toggle">
+        <summary>&#9432; What's the difference?</summary>
+        <div class="card-desc"><strong>Loopback</strong> listens to what Windows is already playing into the virtual cable. Windows doesn't count that as microphone access, so PC2Sonos isn't listed under Privacy &amp; security &gt; Microphone and the mic never shows as in use. The <strong>recording device</strong> method opens the cable as if it were a microphone: it carries the identical audio, but Windows treats it as mic access the whole time PC2Sonos runs. Switch to it only if loopback ever gives you silence &mdash; PC2Sonos also falls back to it by itself if loopback can't be used. Switching reconnects your Sonos speakers for a few seconds.</div>
+      </details>
+      <select id="captureMethod" onchange="setCaptureMethod()" style="padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px; max-width:100%;">
+        <option value="loopback">Loopback &mdash; no microphone access (recommended)</option>
+        <option value="recording">Recording device &mdash; Windows shows the mic in use</option>
+      </select>
+      <div id="captureMethodStatus" style="margin-top:8px; font-size:12px; color:#888;"></div>
     </div>
   </div>
 </details>
@@ -928,6 +937,55 @@ async function setCaptureSource(){
     ? (targets.length ? ('Now mixing ' + targets.join(', ') + ' into the Sonos stream.') : 'Now capturing the whole system again.')
     : ('Failed: ' + data.error);
 }
+let _captureMethodBusy = false;
+function showCaptureMethodStatus(d){
+  const el = document.getElementById('captureMethodStatus');
+  const c = d.capture || {};
+  const rate = c.rate ? (' at ' + (c.rate / 1000) + ' kHz') : '';
+  el.style.color = '#888';
+  if (!c.method) {
+    el.textContent = 'Not capturing yet (waiting for the virtual cable).';
+  } else if (c.method === 'apps') {
+    el.textContent = 'Currently mixing selected apps (see Audio source above), which is separate from this setting.';
+  } else if (c.method === 'loopback') {
+    el.textContent = 'In use: loopback capture' + rate + '.';
+  } else if (c.fallback_reason) {
+    el.style.color = '#e0a030';
+    el.textContent = 'Loopback could not be used (' + c.fallback_reason + '), so the recording device is in use instead' + rate + '. Windows will show the mic as in use.';
+  } else {
+    el.textContent = 'In use: recording device' + rate + '. Windows will show the mic as in use.';
+  }
+}
+async function loadCaptureMethod(){
+  try {
+    const res = await fetch('/api/capture_method');
+    const d = await res.json();
+    const block = document.getElementById('captureMethodBlock');
+    if (!d.supported) { block.style.display = 'none'; return; }
+    block.style.display = 'block';
+    if (!_captureMethodBusy) document.getElementById('captureMethod').value = d.configured;
+    if (!_captureMethodBusy) showCaptureMethodStatus(d);
+  } catch (e) {}
+}
+async function setCaptureMethod(){
+  const sel = document.getElementById('captureMethod');
+  const el = document.getElementById('captureMethodStatus');
+  _captureMethodBusy = true;
+  sel.disabled = true;
+  el.style.color = '#888';
+  el.textContent = 'Switching... your Sonos speakers reconnect for a few seconds.';
+  try {
+    const res = await fetch('/api/capture_method', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({method: sel.value})});
+    const d = await res.json();
+    if (d.ok) { showCaptureMethodStatus(d); } else { el.textContent = 'Failed: ' + d.error; }
+  } catch (e) {
+    el.textContent = 'Failed: ' + e;
+  } finally {
+    sel.disabled = false;
+    _captureMethodBusy = false;
+  }
+}
 function exportDiag(){
   document.getElementById('diagModal').classList.add('show');
 }
@@ -977,8 +1035,24 @@ async function checkPlatform(){
     const banner = document.getElementById('platformBanner');
     const text = document.getElementById('platformText');
     const btn = document.getElementById('platformButton');
-    if (s.platform !== 'darwin') { banner.style.display = 'none'; return; }
     banner.classList.remove('banner-warn', 'banner-info');
+    if (s.platform !== 'darwin') {
+      // Windows: nothing to say while loopback is working. The one case
+      // worth a banner is loopback having quietly fallen back to the
+      // recording device, because that brings back the microphone
+      // indicator this app otherwise no longer causes -- explain it,
+      // rather than leaving the person to wonder why it's lit again.
+      const c = s.capture || {};
+      if (s.platform === 'win32' && c.configured === 'loopback' && c.method === 'recording' && c.fallback_reason) {
+        banner.classList.add('banner-warn');
+        text.textContent = `PC2Sonos couldn't use loopback capture (${c.fallback_reason}), so it is reading the virtual cable as a recording device instead. Audio works normally, but Windows will show the microphone as in use while PC2Sonos runs. That is the cable, not your real microphone.`;
+        btn.style.display = 'none';
+        banner.style.display = 'block';
+      } else {
+        banner.style.display = 'none';
+      }
+      return;
+    }
     if (!s.capture_device_present) {
       banner.classList.add('banner-warn');
       text.textContent = 'BlackHole (the virtual audio device PC2Sonos captures from) is not installed. Install it with: brew install --cask blackhole-2ch';
@@ -1117,6 +1191,8 @@ async function loadNowPlaying(){
 refresh();
 loadDevices();
 loadAudioSessions();
+loadCaptureMethod();
+setInterval(loadCaptureMethod, 5000);
 loadSeedIps();
 loadStreamQuality();
 loadSleepTimer();
@@ -1431,7 +1507,7 @@ def api_platform_status():
     audio-input permission that reading from it requires (without it
     CoreAudio delivers silence with no error). On Windows both report
     n/a."""
-    from audio_engine import find_device_index
+    from audio_engine import find_device_index, get_capture_status
     idx, _ = find_device_index(config["capture_device_substr"], want_input=True)
     mic = "n/a"
     if sys.platform == "darwin":
@@ -1442,7 +1518,37 @@ def api_platform_status():
             mic = f"unknown ({e})"
     return jsonify({"platform": sys.platform, "capture_device_present": idx is not None,
                     "capture_device_substr": config["capture_device_substr"],
-                    "microphone_permission": mic})
+                    "microphone_permission": mic,
+                    # how the audio is actually being read right now (Windows: loopback
+                    # vs. the microphone-class recording device) -- see /api/capture_method
+                    "capture": get_capture_status()})
+
+
+@app.route("/api/capture_method", methods=["GET", "POST"])
+def api_capture_method():
+    """Windows: read the virtual cable by WASAPI loopback (default, no
+    microphone access) or as a recording device (the original method,
+    which Windows treats as the microphone). `capture` reports what is
+    actually in use, which differs from `configured` whenever loopback
+    had to fall back. Not applicable on macOS (`supported` is false and
+    the dashboard hides the control there)."""
+    from audio_backend import BACKEND
+    from audio_engine import get_capture_status
+    if request.method == "POST":
+        method = (request.get_json(force=True) or {}).get("method")
+        if method not in ("loopback", "recording"):
+            return jsonify({"ok": False, "error": "method must be 'loopback' or 'recording'"}), 400
+        if method != config.get("capture_method"):
+            restart_capture(new_method=method)
+            # Let the restarted capture thread open its stream before
+            # replying, so the answer describes the new state rather than
+            # a blank in-between one.
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and get_capture_status()["method"] is None:
+                time.sleep(0.1)
+    return jsonify({"ok": True, "supported": BACKEND == "pyaudiowpatch",
+                    "configured": config.get("capture_method"),
+                    "capture": get_capture_status()})
 
 
 @app.route("/api/microphone_settings", methods=["POST"])
