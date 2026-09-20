@@ -422,26 +422,52 @@ assert _ab.BACKEND == "pyaudiowpatch"  # the stub above stands in for it, even o
 _CH = audio_engine.CHUNK
 
 
+_all_loopback_fakes = []
+
+
 class _LoopbackFakeStream:
-    """A loopback endpoint that has `chunks` ready to read, then goes quiet --
-    like Windows, which sends nothing while nothing is playing."""
+    """A loopback endpoint whose blocking read() returns the `chunks` it has
+    ready and then blocks forever -- like Windows, which sends nothing while
+    nothing is playing, and like PortAudio, where a stuck read is NOT freed by
+    close(). feed() makes more audio available; release() (test cleanup only)
+    lets a stuck reader thread finish."""
 
-    def __init__(self, chunks):
+    def __init__(self, chunks, fail=False):
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
         self.remaining = chunks
+        self.fail = fail
+        self.released = False
+        _all_loopback_fakes.append(self)
 
-    def get_read_available(self):
-        return _CH * self.remaining
+    def feed(self, chunks):
+        with self._lock:
+            self.remaining += chunks
+        self._wake.set()
+
+    def release(self):
+        self.released = True
+        self._wake.set()
 
     def read(self, n, exception_on_overflow=False):
-        assert self.remaining > 0, "read() must only be called once frames are available"
-        self.remaining -= 1
-        return b"\x01\x00" * n * 2  # non-silent
+        if self.fail:
+            time.sleep(0.005)
+            raise OSError("simulated: Unanticipated host error")
+        while True:
+            with self._lock:
+                if self.remaining > 0:
+                    self.remaining -= 1
+                    return b"\x01\x00" * n * 2  # non-silent
+                self._wake.clear()
+            self._wake.wait()  # nothing playing: block, indefinitely
+            if self.released:
+                raise OSError("released")
 
     def stop_stream(self):
         pass
 
     def close(self):
-        pass
+        pass  # deliberately does NOT free a stuck read, exactly like the real thing
 
 
 class _RecordingFakeStream(FakeStream):
@@ -466,6 +492,7 @@ class _CableFakePyAudio:
         ]
         self.opened = []  # input_device_index of each capture stream opened, in order
         self.fail_loopback_open = False
+        self.loopback_read_fails = False
         self.loopback_chunks = 0
 
     def get_device_count(self):
@@ -490,7 +517,7 @@ class _CableFakePyAudio:
         if self.devices[idx].get("isLoopbackDevice"):
             if self.fail_loopback_open:
                 raise OSError("simulated: Invalid sample rate")
-            return _LoopbackFakeStream(self.loopback_chunks)
+            return _LoopbackFakeStream(self.loopback_chunks, fail=self.loopback_read_fails)
         return _RecordingFakeStream()
 
 
@@ -623,7 +650,7 @@ try:
     th = threading.Thread(target=audio_engine._capture_loop_system, args=(stop,), daemon=True)
     th.start()
     time.sleep(0.7)            # idle: silence is being fed
-    stream.remaining = 5       # playback starts
+    stream.feed(5)             # playback starts
     time.sleep(0.3)
     stop.set(); th.join(timeout=2)
     audio_engine.broadcaster.unsubscribe(sid)
@@ -664,6 +691,15 @@ try:
     assert chunks, "audio must flow on the fallback device"
     print("  loopback that won't open -> recording device after retries OK")
 
+    # a loopback stream that keeps erroring is treated as dead and reopened,
+    # not read forever (5 consecutive errors, same as the recording path)
+    fake = _CableFakePyAudio()
+    fake.loopback_read_fails = True
+    chunks, status, stopped = _capture_for(fake, 1.5, fast_sleep=True)
+    assert stopped and fake.opened.count(1) >= 2, \
+        f"a dead loopback stream must be reopened, opened: {fake.opened}"
+    print("  dead loopback stream is reopened OK")
+
     # (f) the explicit "recording" setting never touches loopback
     audio_engine.config["capture_method"] = "recording"
     fake = _CableFakePyAudio()
@@ -697,6 +733,8 @@ try:
     assert b'id="captureMethod"' in client.get("/").data
     print("  /api/capture_method, /api/platform_status, diagnostics OK")
 finally:
+    for _fake_stream in _all_loopback_fakes:
+        _fake_stream.release()
     audio_engine._pa = _real_pa
     audio_engine.time = _real_engine_time
     audio_engine._restart_downstream = _real_restart_downstream

@@ -555,12 +555,11 @@ def _pick_loopback_device():
     return idx, info, None
 
 
-# Loopback only: how long without a single packet from Windows before we
-# start feeding the streams silence ourselves, and how often the read loop
-# checks for new packets.
+# Loopback only: how long the reader can go without a packet from Windows
+# before we start feeding the streams silence ourselves, and how often the
+# watcher checks.
 _LOOPBACK_IDLE_GRACE_S = 0.3
-_LOOPBACK_POLL_S = 0.005
-_LOOPBACK_MAX_CHUNKS_PER_POLL = 8
+_LOOPBACK_WATCH_S = 0.01
 _LOOPBACK_OPEN_FAILURES_BEFORE_FALLBACK = 3
 
 
@@ -582,64 +581,87 @@ def _read_loop_recording(stream, stop_event):
     return consecutive_errors
 
 
+class _LoopbackReader(threading.Thread):
+    """Blocking reads of one WASAPI loopback stream, on a thread of their own.
+
+    Blocking reads are the only way of reading this stream that loses
+    nothing. Polling it with get_read_available() instead delivered only
+    ~99.3% of real time on a real PC with no overflow ever reported --
+    which drained each Sonos speaker's buffer about every 100 seconds (the
+    speaker then stops and has to be restarted) and put faint clicks in the
+    PC speakers -- where blocking reads delivered 99.9%+.
+
+    A blocking read has two hazards, hence the separate thread and the
+    watcher in _read_loop_loopback: Windows only sends loopback data while
+    something is playing to that endpoint (real playback devices send
+    nothing at all when idle, and a read on one never returns), and a read
+    stuck inside PortAudio can't be interrupted -- closing the stream from
+    another thread returns at once but leaves that read, and this thread,
+    stuck for good."""
+
+    def __init__(self, stream):
+        super().__init__(daemon=True)
+        self.stream = stream
+        self.last_data = time.monotonic()
+        self.errors = 0          # consecutive read errors; 5 = the stream is dead
+        self.abandoned = False   # set when nobody is listening any more
+
+    def run(self):
+        while not self.abandoned and self.errors < 5:
+            try:
+                data = self.stream.read(CHUNK, exception_on_overflow=False)
+            except Exception as e:
+                if self.abandoned:
+                    return
+                self.errors += 1
+                print(f"[audio] capture error: {e}")
+                time.sleep(0.5)
+                continue
+            if self.abandoned:
+                return  # a read that finally returned after we moved on: drop it
+            self.errors = 0
+            self.last_data = time.monotonic()
+            broadcaster.publish(data)
+
+
 def _read_loop_loopback(stream, stop_event, rate, channels):
-    """Reads a WASAPI loopback stream WITHOUT ever blocking inside
-    PortAudio, unlike _read_loop_recording -- for two reasons found by
-    testing on a real PC:
-
-      * Windows only sends loopback data while something is actually
-        playing to that endpoint. Real playback devices (speakers,
-        headphones) send nothing at all when idle, and VB-Cable's endpoint
-        does not stall only because its driver keeps its own clock
-        running -- not something to bet every Windows version on. A
-        blocking read on a silent endpoint never returns, which would
-        starve every Sonos stream the moment nothing is playing. So poll
-        for available frames instead, and once Windows has sent nothing
-        for a moment, publish real-time silence ourselves until it does.
-      * A read blocked inside PortAudio can't be interrupted -- closing the
-        stream from another thread returns at once but leaves that read
-        (and its thread) stuck -- so a stalled loopback would otherwise
-        make restart_capture() unable to stop this thread.
-
-    Returns the number of consecutive errors it ended on, like
-    _read_loop_recording."""
+    """Publishes a WASAPI loopback stream, feeding real-time silence
+    whenever Windows has sent nothing for a moment (see _LoopbackReader) so
+    every Sonos stream and the local render path stay alive on an idle
+    system. Returns the number of consecutive errors it ended on, like
+    _read_loop_recording (5 = the stream is dead)."""
+    reader = _LoopbackReader(stream)
+    reader.start()
     silence = b"\x00" * (CHUNK * channels * 2)  # 16-bit samples
     chunk_seconds = CHUNK / float(rate)
-    consecutive_errors = 0
-    last_data = time.monotonic()
     next_silence = None
     announced_idle = False
-    while not stop_event.is_set() and consecutive_errors < 5:
-        got_data = False
-        try:
-            reads = 0
-            while reads < _LOOPBACK_MAX_CHUNKS_PER_POLL and stream.get_read_available() >= CHUNK:
-                broadcaster.publish(stream.read(CHUNK, exception_on_overflow=False))
-                reads += 1
-                got_data = True
-        except Exception as e:
-            consecutive_errors += 1
-            print(f"[audio] capture error: {e}")
-            time.sleep(0.5)
-            continue
-        consecutive_errors = 0
-
-        now = time.monotonic()
-        if got_data:
-            last_data = now
-            next_silence = None
-        elif now - last_data >= _LOOPBACK_IDLE_GRACE_S:
-            if not announced_idle:
-                announced_idle = True
-                print("[audio] loopback stream is idle (Windows sends no audio while nothing "
-                      "is playing) -- feeding silence so the speakers' streams stay alive")
-            if next_silence is None or now - next_silence > 0.5:
-                next_silence = now  # first idle chunk, or we were suspended: don't replay the gap
-            while next_silence <= now:
-                broadcaster.publish(silence)
-                next_silence += chunk_seconds
-        time.sleep(_LOOPBACK_POLL_S)
-    return consecutive_errors
+    try:
+        while not stop_event.is_set() and reader.errors < 5 and reader.is_alive():
+            now = time.monotonic()
+            if now - reader.last_data >= _LOOPBACK_IDLE_GRACE_S:
+                if not announced_idle:
+                    announced_idle = True
+                    print("[audio] loopback stream is idle (Windows sends no audio while nothing "
+                          "is playing) -- feeding silence so the speakers' streams stay alive")
+                if next_silence is None or now - next_silence > 0.5:
+                    next_silence = now  # first idle chunk, or we were suspended: don't replay the gap
+                while next_silence <= now:
+                    broadcaster.publish(silence)
+                    next_silence += chunk_seconds
+            else:
+                next_silence = None
+            time.sleep(_LOOPBACK_WATCH_S)
+    finally:
+        reader.abandoned = True
+        # A healthy reader returns from its current read within ~20ms and
+        # exits, after which closing the stream is safe. One stuck in a read
+        # on a silent device won't; give up on it after a moment rather than
+        # hold up a restart (it's a daemon thread and exits with the app).
+        reader.join(timeout=0.5)
+    if reader.errors >= 5 or (not reader.is_alive() and not stop_event.is_set()):
+        return 5
+    return reader.errors
 
 
 def _capture_loop_system(stop_event):
