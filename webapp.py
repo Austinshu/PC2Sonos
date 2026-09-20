@@ -493,7 +493,7 @@ DASHBOARD_HTML = """
     <label style="margin-bottom:2px;">Volume</label>
     <details class="info-toggle">
       <summary>&#9432; What does this do?</summary>
-      <div class="card-desc">How loud PC2Sonos plays the delayed audio through the device above, on top of Windows' own volume for it. 100% is the original level and lower turns it down. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top. (If an aux/line-out speaker is too quiet even at 100%, there's a separate boost under Advanced.)</div>
+      <div class="card-desc">How loud PC2Sonos plays the delayed audio through the device above, on top of Windows' own volume for it. 100% is the original level and lower turns it down. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top. Note that Windows' own volume keys and taskbar slider control the virtual cable, not your speakers; the speakers' own Windows volume is under Settings &gt; System &gt; Sound, on your speakers' entry. (If an aux/line-out speaker is still too quiet with that turned up, there's a separate boost under Advanced.)</div>
     </details>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <input type="range" min="0" max="100" step="1" id="localVolume" value="{{local_volume_percent}}"
@@ -609,7 +609,7 @@ DASHBOARD_HTML = """
       <label style="margin-bottom:2px;">PC speaker boost</label>
       <details class="info-toggle">
         <summary>&#9432; What does this do?</summary>
-        <div class="card-desc">For an aux/line-out speaker that's too quiet even with the PC speaker Volume at 100% and Windows' volume up: amplifies the signal with a soft limiter, so loud peaks compress gradually instead of clipping. It stacks on top of the Volume slider, and nothing else changes it &mdash; not even the master volume slider.</div>
+        <div class="card-desc">For an aux/line-out speaker that's too quiet even with the PC speaker Volume at 100% and Windows' volume up: amplifies the signal with a soft limiter, so loud peaks compress gradually instead of clipping. It is applied first, and the Volume slider then turns the boosted sound down, so Volume does exactly what it says at any boost setting. Nothing else changes the boost &mdash; not even the master volume slider.</div>
       </details>
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <input type="range" min="100" max="500" step="1" id="localGain" value="{{local_gain_percent}}"

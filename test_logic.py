@@ -213,18 +213,34 @@ r = client.post("/api/local_volume", json={"percent": 100})  # restore default f
 assert webapp.config["local_volume"] == 1.0
 print("  /api/local_volume OK (clamped to 0-100%)")
 
-# volume and boost are separate settings that multiply; the boost can never be
-# lowered by anything that turns the volume down
+# The level chain is boost (soft-limited) THEN volume (linear). Volume must stay a
+# plain proportional control at ANY boost -- when the two were folded into one gain
+# ahead of the limiter, a big boost squashed the signal so hard that dragging the
+# volume changed the loudness by a couple of dB and the slider seemed to do nothing.
 import config as _cfgmod  # noqa: E402
-_saved_vb = (audio_engine.config.get("local_volume"), audio_engine.config.get("local_render_gain"))
-try:
-    for _vol, _boost, _want in ((1.0, 1.0, 1.0), (0.5, 1.0, 0.5), (1.0, 2.0, 2.0), (0.5, 2.0, 1.0),
-                                (0.0, 5.0, 0.0), (1.0, 0.4, 1.0)):   # boost below 1.0 (legacy) counts as no boost
-        audio_engine.config["local_volume"], audio_engine.config["local_render_gain"] = _vol, _boost
-        assert abs(audio_engine._effective_local_gain() - _want) < 1e-9, (_vol, _boost, _want)
-finally:
-    audio_engine.config["local_volume"], audio_engine.config["local_render_gain"] = _saved_vb
-print("  effective PC gain = volume x boost OK")
+import numpy as _np_lv  # noqa: E402
+_loud_music = (_np_lv.sin(_np_lv.linspace(0, 2 * _np_lv.pi * 40, 4800, False)) * 0.8 * 32767).astype(_np_lv.int16)
+_loud_music = _np_lv.repeat(_loud_music[:, None], 2, axis=1).flatten().tobytes()
+
+
+def _rms_of(b):
+    a = _np_lv.frombuffer(b, dtype=_np_lv.int16).astype(_np_lv.float64)
+    return float(_np_lv.sqrt((a * a).mean()))
+
+
+for _boost in (1.0, 2.04, 5.0):
+    _full = _rms_of(audio_engine._apply_local_levels(_loud_music, 1.0, _boost)) if _boost != 1.0 else _rms_of(_loud_music)
+    for _vol in (0.9, 0.56, 0.5, 0.25):
+        _got = _rms_of(audio_engine._apply_local_levels(_loud_music, _vol, _boost))
+        assert abs(_got / _full - _vol) < 0.01, f"boost {_boost}: volume {_vol} must scale the level by {_vol}, got {_got / _full:.3f}"
+# and the boost itself is unchanged: it amplifies, and never hard-clips
+_boosted = _np_lv.frombuffer(audio_engine._apply_local_levels(_loud_music, 1.0, 2.04), dtype=_np_lv.int16)
+assert _rms_of(audio_engine._apply_local_levels(_loud_music, 1.0, 2.04)) > _rms_of(_loud_music) * 1.15
+assert int(_np_lv.abs(_boosted).max()) < 32767, "boosted audio must be soft-limited, not hard-clipped"
+# quiet audio passes through untouched at 100% volume and no boost (the render loop skips the stage entirely)
+_q = _np_lv.array([100, -100, 250, -250], dtype=_np_lv.int16).tobytes()
+assert audio_engine._apply_local_levels(_q, 1.0, 1.0) == _q
+print("  PC speaker level chain: boost then a linear volume, proportional at any boost OK")
 
 # an old config had ONE gain (0-500%); a value below 100% was volume, above was boost
 _m = {**_cfgmod.DEFAULT_CONFIG, "local_render_gain": 0.5}

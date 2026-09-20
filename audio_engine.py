@@ -834,14 +834,25 @@ def _soft_limit(normalized):
     return np.clip(out, -1.0, 1.0)
 
 
-def _effective_local_gain():
-    """The gain applied to the local (PC speaker) path: the dashboard's
-    Volume (config['local_volume'], 0-1, the plain slider on the main page)
-    times the Boost (config['local_render_gain'], >=1, under Advanced --
-    for an aux speaker too quiet even at full volume). They are separate
-    settings on purpose: the volume can be dragged freely, but the boost,
-    which is what can stress speakers, is only ever changed deliberately."""
-    return config.get("local_volume", 1.0) * max(1.0, config.get("local_render_gain", 1.0))
+def _apply_local_levels(pcm_bytes, volume, boost):
+    """The PC-speaker level chain, in the order a real amplifier has it: the
+    BOOST first (config['local_render_gain'], >=1, under Advanced -- for an
+    aux speaker too quiet even at full volume), soft-limited so it can't
+    hard-clip, and THEN the VOLUME (config['local_volume'], 0-1, the plain
+    slider on the main page) as a straight linear scale of whatever came out.
+
+    Volume comes last on purpose. The two used to be multiplied into a single
+    gain that went through the limiter, and with a big boost the limiter
+    squashed the signal so hard that dragging the volume down changed the
+    loudness by only a couple of dB -- the slider looked like it did nothing.
+    After the limiter, 50% is always exactly half the amplitude, whatever the
+    boost is set to."""
+    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    if boost > 1.0:
+        samples = _soft_limit(samples * (boost / 32768.0)) * 32767.0
+    if volume < 1.0:
+        samples = samples * volume
+    return np.clip(samples, -32768, 32767).astype(np.int16).tobytes()
 
 
 def _apply_local_gain(pcm_bytes, gain):
@@ -1090,13 +1101,15 @@ def _render_session(stop_event):
     try:
         while not stop_event.is_set():
             target_bytes = int(bytes_per_ms * config["local_delay_ms"])
-            # Windows' own volume mixer only controls what's captured INTO
-            # the virtual cable -- it has no effect on what this render
-            # path plays back afterward, so an aux/line-level speaker that
-            # needs more than that source signal provides has no other
-            # knob to turn. Gain is applied (see _apply_local_gain) here,
-            # after resampling, right before the device write.
-            gain = _effective_local_gain()
+            # Windows' volume keys and taskbar slider control the DEFAULT
+            # playback device, which is the virtual cable -- not the speakers
+            # this path plays to (those have their own Windows volume,
+            # applied after this), so the dashboard needs its own controls
+            # for them. Boost then volume are applied (see
+            # _apply_local_levels) here, after resampling, right before the
+            # device write.
+            volume = config.get("local_volume", 1.0)
+            boost = max(1.0, config.get("local_render_gain", 1.0))
             bass_db = config.get("local_eq_bass_db", 0.0)
             mid_db = config.get("local_eq_mid_db", 0.0)
             treble_db = config.get("local_eq_treble_db", 0.0)
@@ -1127,8 +1140,8 @@ def _render_session(stop_event):
                         capture_rate, render_rate, resample_state)
                 if out:
                     out = eq.process(out, bass_db, mid_db, treble_db)
-                if out and gain != 1.0:
-                    out = _apply_local_gain(out, gain)
+                if out and (volume != 1.0 or boost != 1.0):
+                    out = _apply_local_levels(out, volume, boost)
                 if out:
                     stream.write(out)
     finally:

@@ -145,9 +145,11 @@ In v1.5 they are separate. The **Volume** slider in the PC speaker output
 card runs from 0% to 100% and defaults to 100%, the original level; it can
 only turn things down. The **PC speaker boost** is its own slider under
 Advanced, from 100% (no boost, the default) to 500%, with the same soft
-limiter and the same hardware-risk warning while it is on. It multiplies the
-volume, and because it is the one control that can stress speakers, nothing
-you drag around casually can move it any more: the master volume slider scales
+limiter and the same hardware-risk warning while it is on. The boost is
+applied first and the volume is then a plain linear scale of the result, so
+the Volume slider does exactly what it says at any boost setting, and
+because the boost is the one control that can stress speakers, nothing you
+drag around casually can move it any more: the master volume slider scales
 your Sonos speakers and the PC speaker volume (down only for the PC, never
 above where you had it) and never touches the boost. Below 100% the volume is
 now a plain linear scale rather than going through the limiter, so turning it
@@ -348,16 +350,20 @@ output picker) sets how loud PC2Sonos plays the delayed audio through
 your real PC speakers/headphones, on top of Windows' own volume for that
 device. It runs from 0% to 100%, and 100% -- the default -- is the
 original, unchanged level. It only affects the local speaker path; Sonos
-speakers keep their own independent volume control.
+speakers keep their own independent volume control. (Windows' own volume
+keys and taskbar slider control the virtual cable, not your speakers, so
+they won't change how loud the PC speakers are -- the speakers' own Windows
+volume is under Settings > System > Sound, on your speakers' entry.)
 
 If that device still sounds too quiet at 100% volume and full Windows
 volume (common with a passive speaker on a line-level aux input), there's
 a separate **PC speaker boost** under Advanced. It goes from 100% (no
 boost, the default) up to 500%, using a soft limiter rather than a hard
 clip so loud peaks compress gradually as they approach full scale instead
-of slamming flat, and the dashboard shows a warning while it's on. It
-stacks on top of the Volume slider, and it's a separate setting on
-purpose: it is the one control that can stress speakers, so nothing you
+of slamming flat, and the dashboard shows a warning while it's on. The
+boost is applied first and the Volume slider then scales the boosted sound
+in a straight line, so Volume does exactly what it says at any boost
+setting. It's a separate setting on purpose: it is the one control that can stress speakers, so nothing you
 drag around casually -- the master volume slider included -- can change
 it.
 
