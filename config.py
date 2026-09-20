@@ -123,14 +123,19 @@ DEFAULT_CONFIG = {
     # controls. Starts at 0 on a fresh install -- use the Auto button (or
     # drag the slider up by ear) to find the right value for your setup.
     "local_delay_ms": 0,
-    # Volume for the LOCAL (aux/line-out) speaker path only -- Windows'
-    # own volume mixer controls what's captured going IN, not what this
-    # app does with it afterward, so a quiet aux speaker has no other way
-    # to get louder than the source signal already is. 1.0 = unchanged
-    # passthrough (the old, only-ever behavior); the dashboard slider
-    # shows this as a 0-500% range, with 0-100% being the safe/no-warning
-    # zone. Sonos speakers are unaffected -- they have their own
-    # independent volume (config['speakers'][uid]['volume']).
+    # Volume for the LOCAL (PC speaker) path only, 0.0-1.0 -- the plain
+    # volume slider on the dashboard's main page. 1.0 (the default) plays
+    # the audio at its original level; lower turns it down. Sonos speakers
+    # have their own independent volumes (config['speakers'][uid]).
+    "local_volume": 1.0,
+    # BOOST for the local path, 1.0-5.0 (Advanced on the dashboard): for an
+    # aux/line-out speaker that's too quiet even at full volume. 1.0 (the
+    # default) = no boost. It multiplies local_volume, and is deliberately
+    # a separate setting so nothing that turns the volume up and down (the
+    # master volume slider included) can ever push it into the range where
+    # it can stress speakers. Older builds had ONE value here spanning
+    # 0-500%, with the part below 1.0 acting as volume -- see
+    # _migrate_local_volume.
     "local_render_gain": 1.0,
     # Bass/mid/treble EQ, LOCAL speaker path only (0.0 dB = flat/off,
     # each -24..+24 in the dashboard, with a warning past +/-6). Sonos
@@ -215,6 +220,17 @@ def _migrate_single_app_capture(cfg):
             cfg["capture_target_names"] = [old_target]
 
 
+def _migrate_local_volume(loaded, merged):
+    """Older builds had a single local_render_gain covering 0-500%: below
+    100% it turned the PC speakers down, above 100% it boosted them. Volume
+    (local_volume, 0-100%) and boost (local_render_gain, 100-500%) are now
+    separate settings, so carry a value below 1.0 over as the volume and
+    leave the boost off -- while a boost above 1.0 simply stays the boost."""
+    if "local_volume" not in loaded and merged.get("local_render_gain", 1.0) < 1.0:
+        merged["local_volume"] = merged["local_render_gain"]
+        merged["local_render_gain"] = 1.0
+
+
 def load_config():
     if CONFIG_PATH.exists():
         try:
@@ -222,6 +238,7 @@ def load_config():
                 cfg = json.load(f)
             merged = {**DEFAULT_CONFIG, **cfg}
             _migrate_single_app_capture(merged)
+            _migrate_local_volume(cfg, merged)
             return merged
         except Exception:
             pass

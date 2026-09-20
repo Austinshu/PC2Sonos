@@ -146,11 +146,14 @@ client = webapp.app.test_client()
 
 r = client.get("/")
 assert r.status_code == 200 and b"Sonos speakers" in r.data, "expected the full dashboard"
-# the PC speaker volume slider lives on the main page, in the PC speaker output
-# card -- not tucked away inside the collapsed Advanced card
+# the PC speaker VOLUME slider (0-100%) lives on the main page, in the PC
+# speaker output card; the BOOST (100-500%) is a separate control inside the
+# collapsed Advanced card -- so nothing on the main page can be dragged into
+# the range that stresses speakers
 _page = r.data.decode("utf-8")
-assert _page.count('id="localGain"') == 1, "exactly one PC speaker volume slider"
-assert _page.index("PC speaker output") < _page.index('id="localGain"') < _page.index("Advanced:"),     "the volume slider must sit in the PC speaker output card, above the collapsed Advanced card"
+assert _page.count('id="localVolume"') == 1 and _page.count('id="localGain"') == 1
+assert _page.index("PC speaker output") < _page.index('id="localVolume"') < _page.index("Advanced:") \
+    < _page.index('id="localGain"'), "volume in the PC speaker output card, boost inside Advanced"
 print("  / OK")
 
 r = client.get("/api/speakers")
@@ -186,11 +189,49 @@ r = client.post("/api/local_gain", json={"percent": 150})
 assert r.status_code == 200 and webapp.config["local_render_gain"] == 1.5
 r = client.post("/api/local_gain", json={"percent": 999})  # clamps, doesn't error
 assert r.status_code == 200 and webapp.config["local_render_gain"] == 5.0
-r = client.post("/api/local_gain", json={"percent": 100})  # restore default for later tests
+r = client.post("/api/local_gain", json={"percent": 20})  # the boost can't turn things DOWN
+assert r.status_code == 200 and webapp.config["local_render_gain"] == 1.0
+r = client.post("/api/local_gain", json={"percent": 100})
 assert webapp.config["local_render_gain"] == 1.0
-print("  /api/local_gain OK (clamped to 0-500%)")
+print("  /api/local_gain OK (the boost: clamped to 100-500%)")
 
-print("[test] /api/master_volume: scales enabled speakers + PC boost, leaves disabled speakers alone...")
+r = client.post("/api/local_volume", json={"percent": 40})
+assert r.status_code == 200 and webapp.config["local_volume"] == 0.4
+r = client.post("/api/local_volume", json={"percent": 999})  # volume never goes past 100%
+assert r.status_code == 200 and webapp.config["local_volume"] == 1.0
+r = client.post("/api/local_volume", json={"percent": -5})
+assert r.status_code == 200 and webapp.config["local_volume"] == 0.0
+r = client.post("/api/local_volume", json={"percent": 100})  # restore default for later tests
+assert webapp.config["local_volume"] == 1.0
+print("  /api/local_volume OK (clamped to 0-100%)")
+
+# volume and boost are separate settings that multiply; the boost can never be
+# lowered by anything that turns the volume down
+import config as _cfgmod  # noqa: E402
+_saved_vb = (audio_engine.config.get("local_volume"), audio_engine.config.get("local_render_gain"))
+try:
+    for _vol, _boost, _want in ((1.0, 1.0, 1.0), (0.5, 1.0, 0.5), (1.0, 2.0, 2.0), (0.5, 2.0, 1.0),
+                                (0.0, 5.0, 0.0), (1.0, 0.4, 1.0)):   # boost below 1.0 (legacy) counts as no boost
+        audio_engine.config["local_volume"], audio_engine.config["local_render_gain"] = _vol, _boost
+        assert abs(audio_engine._effective_local_gain() - _want) < 1e-9, (_vol, _boost, _want)
+finally:
+    audio_engine.config["local_volume"], audio_engine.config["local_render_gain"] = _saved_vb
+print("  effective PC gain = volume x boost OK")
+
+# an old config had ONE gain (0-500%); a value below 100% was volume, above was boost
+_m = {**_cfgmod.DEFAULT_CONFIG, "local_render_gain": 0.5}
+_cfgmod._migrate_local_volume({"local_render_gain": 0.5}, _m)
+assert _m["local_volume"] == 0.5 and _m["local_render_gain"] == 1.0, _m
+_m = {**_cfgmod.DEFAULT_CONFIG, "local_render_gain": 1.9}
+_cfgmod._migrate_local_volume({"local_render_gain": 1.9}, _m)
+assert _m["local_volume"] == 1.0 and _m["local_render_gain"] == 1.9, "an old boost stays the boost"
+_m = {**_cfgmod.DEFAULT_CONFIG, "local_volume": 0.3, "local_render_gain": 0.5}
+_cfgmod._migrate_local_volume({"local_volume": 0.3, "local_render_gain": 0.5}, _m)
+assert _m["local_volume"] == 0.3, "an already-migrated config must not be migrated again"
+assert _cfgmod.DEFAULT_CONFIG["local_volume"] == 1.0 and _cfgmod.DEFAULT_CONFIG["local_render_gain"] == 1.0
+print("  old single-gain config migrates into volume + boost OK; defaults are 100% / no boost")
+
+print("[test] /api/master_volume: scales enabled speakers + PC volume, leaves disabled speakers and the boost alone...")
 import types as _mv_types  # noqa: E402
 _mv_on = _mv_types.SimpleNamespace(volume=0)
 _mv_off = _mv_types.SimpleNamespace(volume=0)
@@ -199,31 +240,36 @@ webapp.speaker_mgr.speakers["MV_OFF"] = _mv_off
 _mv_saved_speakers_cfg = dict(webapp.config["speakers"])
 webapp.config["speakers"]["MV_ON"] = {"enabled": True, "volume": 80}
 webapp.config["speakers"]["MV_OFF"] = {"enabled": False, "volume": 80}
-webapp.config["local_render_gain"] = 2.0  # 200%
+webapp.config["local_volume"] = 0.8       # PC volume 80%
+webapp.config["local_render_gain"] = 2.0  # boost 200% -- master volume must never touch this
 try:
     r = client.post("/api/master_volume", json={"percent": 50})
     assert r.status_code == 200
     body = r.get_json()
-    assert body["ok"] is True and body["local_gain_percent"] == 100, body
+    assert body["ok"] is True and body["local_volume_percent"] == 40, body
     assert webapp.config["speakers"]["MV_ON"]["volume"] == 40, \
         "an enabled speaker's volume should scale with the master percentage"
     assert _mv_on.volume == 40, "the scaled volume must actually reach the zone, not just config"
     assert webapp.config["speakers"]["MV_OFF"]["volume"] == 80, \
         "a disabled speaker must be left untouched by master volume"
-    assert webapp.config["local_render_gain"] == 1.0, "the PC boost should scale by the same percentage"
+    assert webapp.config["local_volume"] == 0.4, "the PC volume should scale by the same percentage"
+    assert webapp.config["local_render_gain"] == 2.0, "the PC boost must never be touched by master volume"
 
     r = client.post("/api/master_volume", json={"percent": 999})  # clamps to 500, doesn't error
     assert r.status_code == 200 and r.get_json()["ok"] is True
     assert webapp.config["speakers"]["MV_ON"]["volume"] == 100, \
         "scaling a Sonos speaker up by 500% should still clamp its volume to 100"
-    assert r.get_json()["local_gain_percent"] == 200, \
-        "scaling UP must never touch the PC boost -- it should stay at its 200% baseline, " \
-        "not also get multiplied by 5x (that exact compounding pushed a real boost to " \
-        "its ceiling from a single master-volume press)"
+    assert r.get_json()["local_volume_percent"] == 80, \
+        "scaling UP must never raise the PC volume past its 80% baseline"
+    assert webapp.config["local_render_gain"] == 2.0, "still no change to the boost"
+
+    r = client.post("/api/master_volume", json={"percent": 100})  # back to 100: baseline restored exactly
+    assert webapp.config["speakers"]["MV_ON"]["volume"] == 80 and webapp.config["local_volume"] == 0.8
 finally:
     del webapp.speaker_mgr.speakers["MV_ON"]
     del webapp.speaker_mgr.speakers["MV_OFF"]
     webapp.config["speakers"] = _mv_saved_speakers_cfg
+    webapp.config["local_volume"] = 1.0
     webapp.config["local_render_gain"] = 1.0
 print("  OK")
 
@@ -1038,6 +1084,55 @@ assert status["checked"] is False and status["update_available"] is False
 r = client.get("/api/update_status")
 assert r.status_code == 200 and r.get_json() == status
 print("  OK")
+
+# The release notes ride along in the SAME response the version check already
+# fetches (no extra request), are capped, and reach the dashboard through the
+# route -- so the changelog can be read without downloading anything.
+class _FakeGitHubResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+_real_requests_get = updater.requests.get
+_gh_calls = []
+
+
+def _fake_github(url, **kw):
+    _gh_calls.append(url)
+    return _FakeGitHubResponse({
+        "tag_name": "v99.0.0", "name": "PC2Sonos v99.0.0",
+        "html_url": "https://github.com/Austinshu/PC2Sonos/releases/tag/v99.0.0",
+        "body": "- **Fixed** a thing\r\n- second\r\n" + "x" * 20000,
+        "assets": [{"name": updater._ASSET_NAME, "browser_download_url": "https://example.invalid/PC2Sonos-Setup.exe"}],
+    })
+
+
+try:
+    updater.requests.get = _fake_github
+    updater._check(5)
+    _st = updater.get_status()
+    assert len(_gh_calls) == 1, "the notes must come from the one request the version check already makes"
+    assert _st["update_available"] and _st["latest_version"] == "v99.0.0"
+    assert _st["notes"].startswith("- **Fixed** a thing") and len(_st["notes"]) == updater._MAX_NOTES_CHARS
+    assert _st["release_url"].endswith("/tag/v99.0.0") and _st["download_url"].endswith("PC2Sonos-Setup.exe")
+    assert client.get("/api/update_status").get_json()["notes"] == _st["notes"]
+    updater.requests.get = lambda url, **kw: _FakeGitHubResponse({"tag_name": "v99.0.1", "assets": []})
+    updater._check(5)  # a release with no body: empty string, never None
+    assert updater.get_status()["notes"] == ""
+finally:
+    updater.requests.get = _real_requests_get
+    with updater._lock:
+        updater._status.update(checked=False, update_available=False, latest_version=None,
+                               download_url=None, release_name=None, release_url=None, notes="")
+_page = client.get("/").data.decode("utf-8")
+assert 'id="updateNotes"' in _page and "function renderNotes" in _page and "function addInline" in _page
+print("  release notes are captured from the one request, capped, and served to the dashboard OK")
 
 print("[test] diagnostics module...")
 import diagnostics  # noqa: E402

@@ -834,6 +834,16 @@ def _soft_limit(normalized):
     return np.clip(out, -1.0, 1.0)
 
 
+def _effective_local_gain():
+    """The gain applied to the local (PC speaker) path: the dashboard's
+    Volume (config['local_volume'], 0-1, the plain slider on the main page)
+    times the Boost (config['local_render_gain'], >=1, under Advanced --
+    for an aux speaker too quiet even at full volume). They are separate
+    settings on purpose: the volume can be dragged freely, but the boost,
+    which is what can stress speakers, is only ever changed deliberately."""
+    return config.get("local_volume", 1.0) * max(1.0, config.get("local_render_gain", 1.0))
+
+
 def _apply_local_gain(pcm_bytes, gain):
     """Amplifies 16-bit PCM by `gain`, soft-limiting (see _soft_limit)
     instead of hard-clipping as the signal approaches full scale. Real
@@ -1086,7 +1096,7 @@ def _render_session(stop_event):
             # needs more than that source signal provides has no other
             # knob to turn. Gain is applied (see _apply_local_gain) here,
             # after resampling, right before the device write.
-            gain = config.get("local_render_gain", 1.0)
+            gain = _effective_local_gain()
             bass_db = config.get("local_eq_bass_db", 0.0)
             mid_db = config.get("local_eq_mid_db", 0.0)
             treble_db = config.get("local_eq_treble_db", 0.0)

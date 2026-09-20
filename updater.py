@@ -22,12 +22,21 @@ if sys.platform == "darwin":
 else:
     _ASSET_NAME = "PC2Sonos-Setup.exe"
 
+# The release notes ride along in the SAME response the version check already
+# fetches (nothing extra is requested), so the dashboard can show what's
+# changed without the person having to download anything first. Capped so a
+# huge release body can't bloat the in-memory status the dashboard polls.
+_MAX_NOTES_CHARS = 8000
+
 _status = {
     "checked": False,
     "update_available": False,
     "current_version": VERSION,
     "latest_version": None,
     "download_url": None,
+    "release_name": None,
+    "release_url": None,
+    "notes": "",
 }
 _lock = threading.Lock()
 
@@ -61,6 +70,9 @@ def _check(timeout):
         "current_version": VERSION,
         "latest_version": None,
         "download_url": None,
+        "release_name": None,
+        "release_url": None,
+        "notes": "",
     }
     try:
         resp = requests.get(
@@ -79,6 +91,9 @@ def _check(timeout):
         # fall back to the release page itself if the asset ever gets
         # renamed -- a page to click "download" from beats no link at all
         result["download_url"] = download_url or data.get("html_url")
+        result["release_name"] = data.get("name") or latest
+        result["release_url"] = data.get("html_url")
+        result["notes"] = str(data.get("body") or "").strip()[:_MAX_NOTES_CHARS]
         if _parse_version(latest) > _parse_version(VERSION):
             result["update_available"] = True
     except Exception as e:

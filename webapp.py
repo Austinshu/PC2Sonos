@@ -184,6 +184,20 @@ STYLE_BLOCK = """
   #platformBanner.banner-warn { background:#3a2a10; border:1px solid #6b4a12; }
   #platformBanner.banner-info { background:#12233a; border:1px solid #1f3f6b; }
 
+  /* update banner: one compact row (text + Download) with the release notes
+     tucked behind a "What's new" toggle, so it stays a single line until
+     asked. Reading them never needs a download, and the notes scroll inside
+     a capped height so a long changelog can't push the rest of the dashboard
+     off a standard-height screen. */
+  #updateBanner .update-row { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  #updateBanner .update-notes summary { cursor:pointer; color:#8fd3a5; font-size:12px; margin-top:8px; }
+  #updateNotesBody { margin-top:8px; max-height:min(45vh, 340px); overflow-y:auto; padding-right:8px; font-size:12px; line-height:1.55; color:#cfd8d2; }
+  #updateNotesBody p { margin:0 0 8px; }
+  #updateNotesBody ul { margin:0 0 8px; padding-left:18px; }
+  #updateNotesBody li { margin-bottom:4px; }
+  #updateNotesBody code { background:#0d1a12; padding:1px 4px; border-radius:4px; font-size:11px; }
+  #updateNotesBody a { color:#8fd3a5; }
+
   /* live input level meter, in the stat-row's 4th tile -- a bar instead
      of a number since "how loud" is more legible as a glance-length than
      a percentage would be. Width is set inline per-reading by JS. */
@@ -363,9 +377,15 @@ DASHBOARD_HTML = """
   <button id="platformButton" onclick="platformAction()" class="btn-ghost" style="margin-top:8px;"></button>
 </div>
 
-<div class="card" id="updateBanner" style="display:none; background:#132a1c; border:1px solid #1f4d2e; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-  <span id="updateText" style="color:#ddd; font-size:13px;"></span>
-  <button onclick="downloadUpdate()">Download</button>
+<div class="card" id="updateBanner" style="display:none; background:#132a1c; border:1px solid #1f4d2e;">
+  <div class="update-row">
+    <span id="updateText" style="color:#ddd; font-size:13px;"></span>
+    <button onclick="downloadUpdate()">Download</button>
+  </div>
+  <details class="update-notes" id="updateNotes" style="display:none;">
+    <summary>What's new in <span id="updateNotesVersion"></span></summary>
+    <div id="updateNotesBody"></div>
+  </details>
 </div>
 
 <div class="stat-row">
@@ -453,18 +473,15 @@ DASHBOARD_HTML = """
     <label style="margin-bottom:2px;">Volume</label>
     <details class="info-toggle">
       <summary>&#9432; What does this do?</summary>
-      <div class="card-desc">How loud PC2Sonos plays the delayed audio through the device above, on top of Windows' own volume for it. 100% is the original level and lower turns it down. If an aux/line-out speaker is too quiet even at full Windows volume, go above 100%: that amplifies the signal with a soft limiter, so loud peaks compress gradually instead of clipping. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top.</div>
+      <div class="card-desc">How loud PC2Sonos plays the delayed audio through the device above, on top of Windows' own volume for it. 100% is the original level and lower turns it down. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top. (If an aux/line-out speaker is too quiet even at 100%, there's a separate boost under Advanced.)</div>
     </details>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-      <input type="range" min="0" max="500" step="1" id="localGain" value="{{local_gain_percent}}"
-             oninput="syncLocalGain('slider')" onchange="setLocalGain()" style="flex:1; min-width:150px;">
-      <input type="number" min="0" max="500" step="1" id="localGainNum" value="{{local_gain_percent}}"
-             oninput="syncLocalGain('number')" onchange="setLocalGain()"
+      <input type="range" min="0" max="100" step="1" id="localVolume" value="{{local_volume_percent}}"
+             oninput="syncLocalVolume('slider')" onchange="setLocalVolume()" style="flex:1; min-width:150px;">
+      <input type="number" min="0" max="100" step="1" id="localVolumeNum" value="{{local_volume_percent}}"
+             oninput="syncLocalVolume('number')" onchange="setLocalVolume()"
              style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
       <span>%</span>
-    </div>
-    <div id="localGainWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:6px;">
-      &#9888; Above 100% amplifies past the source's natural level. Pushed far enough it can stress or damage underpowered speakers and amps over time &mdash; 100% is what we recommend.
     </div>
   </div>
 </div>
@@ -526,11 +543,32 @@ DASHBOARD_HTML = """
   </summary>
   <div style="padding:14px 18px 16px;">
     <div style="font-size:11px; color:#999; line-height:1.5;">
-      The EQ below can push your speakers harder than their intended level,
-      and pushing it far enough can stress or damage underpowered
-      speakers/amps over time. <strong>The default (0dB) is what we
-      recommend</strong> -- adjusting past it is at your own risk to your
-      hardware, not just audio quality.
+      The boost and EQ below can push your speakers harder than their
+      intended level, and pushing either far enough can stress or damage
+      underpowered speakers/amps over time. <strong>The defaults (100%
+      boost, 0dB EQ) are what we recommend</strong> -- adjusting past them
+      is at your own risk to your hardware, not just audio quality.
+    </div>
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+      <label style="margin-bottom:2px;">PC speaker boost</label>
+      <details class="info-toggle">
+        <summary>&#9432; What does this do?</summary>
+        <div class="card-desc">For an aux/line-out speaker that's too quiet even with the PC speaker Volume at 100% and Windows' volume up: amplifies the signal with a soft limiter, so loud peaks compress gradually instead of clipping. It stacks on top of the Volume slider, and nothing else changes it &mdash; not even the master volume slider.</div>
+      </details>
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <input type="range" min="100" max="500" step="1" id="localGain" value="{{local_gain_percent}}"
+               oninput="syncLocalGain('slider')" onchange="setLocalGain()" style="flex:1; min-width:150px;">
+        <input type="number" min="100" max="500" step="1" id="localGainNum" value="{{local_gain_percent}}"
+               oninput="syncLocalGain('number')" onchange="setLocalGain()"
+               style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+        <span>%</span>
+      </div>
+      <div style="font-size:11px; color:#777; margin-top:6px;">
+        100% = no boost (the default). Above that amplifies the signal &mdash; loud peaks compress gradually instead of clipping, so it stays clean well past 100%.
+      </div>
+      <div id="localGainWarning" style="display:none; font-size:11px; color:#e0a030; margin-top:4px;">
+        &#9888; The boost is on. The higher you go, the more the limiter has to compress to stay clean, and the harder your speakers are pushed.
+      </div>
     </div>
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
       <label style="margin-bottom:2px;">PC speaker EQ</label>
@@ -780,9 +818,9 @@ async function applyMasterVolume(){
   // everything back to where it was before you started turning it down
   // (the backend scales from a fixed baseline, not from whatever the
   // last press left things at, so this is always reversible)
-  if (data.local_gain_percent !== undefined) {
-    document.getElementById('localGain').value = data.local_gain_percent;
-    syncLocalGain('slider');
+  if (data.local_volume_percent !== undefined) {
+    document.getElementById('localVolume').value = data.local_volume_percent;
+    syncLocalVolume('slider');
   }
   el.textContent = 'Set to ' + percent + '% -- individual volumes below are updated.';
   refresh();
@@ -813,11 +851,28 @@ function syncLocalGain(source){
   } else {
     let v = parseInt(num.value);
     if (isNaN(v)) return;
-    v = Math.max(0, Math.min(500, v));
+    v = Math.max(100, Math.min(500, v));
     slider.value = v;
   }
   document.getElementById('localGainWarning').style.display = (parseInt(slider.value) > 100) ? 'block' : 'none';
   paintRange(slider);
+}
+function syncLocalVolume(source){
+  const slider = document.getElementById('localVolume');
+  const num = document.getElementById('localVolumeNum');
+  if (source === 'slider') {
+    num.value = slider.value;
+  } else {
+    let v = parseInt(num.value);
+    if (isNaN(v)) return;
+    v = Math.max(0, Math.min(100, v));
+    slider.value = v;
+  }
+  paintRange(slider);
+}
+async function setLocalVolume(){
+  const v = document.getElementById('localVolume').value;
+  await fetch('/api/local_volume', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({percent: parseInt(v)})});
 }
 async function setLocalGain(){
   const v = document.getElementById('localGain').value;
@@ -1082,6 +1137,79 @@ async function checkPlatform(){
 function platformAction(){ if (_platformAction) _platformAction(); }
 let _updateDownloadUrl = null;
 let _updatePoll = null;
+function addInline(parent, str){
+  // just enough markdown for release notes -- **bold**, `code`, [text](https://link)
+  // -- built with DOM calls (never innerHTML), so nothing in the notes can
+  // inject markup into the dashboard
+  let i = 0;
+  while (i < str.length) {
+    let next = -1, kind = '';
+    for (const [pos, k] of [[str.indexOf('**', i), 'b'], [str.indexOf('`', i), 'c'], [str.indexOf('[', i), 'l']]) {
+      if (pos !== -1 && (next === -1 || pos < next)) { next = pos; kind = k; }
+    }
+    if (next === -1) { parent.appendChild(document.createTextNode(str.slice(i))); return; }
+    if (next > i) parent.appendChild(document.createTextNode(str.slice(i, next)));
+    if (kind === 'b') {
+      const end = str.indexOf('**', next + 2);
+      if (end === -1) { parent.appendChild(document.createTextNode(str.slice(next))); return; }
+      const el = document.createElement('strong');
+      el.textContent = str.slice(next + 2, end);
+      parent.appendChild(el);
+      i = end + 2;
+    } else if (kind === 'c') {
+      const end = str.indexOf('`', next + 1);
+      if (end === -1) { parent.appendChild(document.createTextNode(str.slice(next))); return; }
+      const el = document.createElement('code');
+      el.textContent = str.slice(next + 1, end);
+      parent.appendChild(el);
+      i = end + 1;
+    } else {
+      const close = str.indexOf('](', next);
+      const end = close === -1 ? -1 : str.indexOf(')', close + 2);
+      const url = end === -1 ? '' : str.slice(close + 2, end);
+      if (end === -1 || !(url.startsWith('https://') || url.startsWith('http://'))) {
+        parent.appendChild(document.createTextNode('['));
+        i = next + 1;
+        continue;
+      }
+      const a = document.createElement('a');
+      a.textContent = str.slice(next + 1, close);
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      parent.appendChild(a);
+      i = end + 1;
+    }
+  }
+}
+function renderNotes(box, text){
+  box.textContent = '';
+  let list = null;
+  for (const raw of String(text || '').split(String.fromCharCode(10))) {
+    const line = raw.split(String.fromCharCode(13)).join('').trim();
+    if (!line) { list = null; continue; }
+    if (line.startsWith('- ') || line.startsWith('* ')) {
+      if (!list) { list = document.createElement('ul'); box.appendChild(list); }
+      const li = document.createElement('li');
+      addInline(li, line.slice(2));
+      list.appendChild(li);
+      continue;
+    }
+    list = null;
+    const p = document.createElement('p');
+    let h = line;
+    while (h.startsWith('#')) h = h.slice(1);
+    h = h.trim();
+    if (h !== line) {
+      const strong = document.createElement('strong');
+      addInline(strong, h);
+      p.appendChild(strong);
+    } else {
+      addInline(p, line);
+    }
+    box.appendChild(p);
+  }
+}
 async function checkUpdate(){
   // Polls OUR OWN local /api/update_status, not GitHub -- the one real
   // GitHub request already happened once at startup (see updater.py).
@@ -1095,7 +1223,26 @@ async function checkUpdate(){
         _updateDownloadUrl = s.download_url;
         document.getElementById('updateText').textContent =
           'PC2Sonos ' + s.latest_version + ' is available — you have ' + s.current_version + '.';
-        document.getElementById('updateBanner').style.display = 'flex';
+        document.getElementById('updateBanner').style.display = 'block';
+        // the changelog stays one click away for as long as an update is
+        // pending -- reading it doesn't require downloading anything, so it
+        // can inform the decision to update rather than come after it
+        if (s.notes) {
+          document.getElementById('updateNotesVersion').textContent = s.latest_version;
+          const body = document.getElementById('updateNotesBody');
+          renderNotes(body, s.notes);
+          if (s.release_url && s.release_url.startsWith('https://')) {
+            const p = document.createElement('p');
+            const a = document.createElement('a');
+            a.textContent = 'Open the full release page';
+            a.href = s.release_url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            p.appendChild(a);
+            body.appendChild(p);
+          }
+          document.getElementById('updateNotes').style.display = 'block';
+        }
       }
     }
   } catch (e) {
@@ -1202,7 +1349,8 @@ checkDonatePrompt();
 checkUpdate();
 checkPlatform();
 setInterval(checkPlatform, 5000);
-syncLocalGain('slider');  // shows the warning immediately if the saved value is already past 100%
+syncLocalVolume('slider');
+syncLocalGain('slider');  // shows the warning immediately if the saved boost is already past 100%
 setLocalEq();  // shows the warning immediately if a saved EQ band is already past +/-6dB
 _updatePoll = setInterval(checkUpdate, 3000);
 setInterval(refresh, 4000);
@@ -1217,7 +1365,8 @@ setInterval(loadLevel, 300);
 def dashboard():
     return render_template_string(
         DASHBOARD_HTML, delay=config["local_delay_ms"], donate_url=DONATE_URL,
-        local_gain_percent=round(config.get("local_render_gain", 1.0) * 100),
+        local_volume_percent=round(config.get("local_volume", 1.0) * 100),
+        local_gain_percent=round(max(1.0, config.get("local_render_gain", 1.0)) * 100),
         eq_bass_db=round(config.get("local_eq_bass_db", 0.0)),
         eq_mid_db=round(config.get("local_eq_mid_db", 0.0)),
         eq_treble_db=round(config.get("local_eq_treble_db", 0.0)))
@@ -1322,28 +1471,23 @@ def api_set_volume(uid):
 
 @app.route("/api/master_volume", methods=["POST"])
 def api_master_volume():
-    """Scale every enabled Sonos speaker's volume AND the PC speaker
-    boost together, relative to a fixed baseline -- whatever they were
-    set to the last time this slider sat at 100% -- rather than to
-    whatever they currently are. Scaling from the live current values
-    (the old behavior) compounds on every press (50% twice lands on 25%,
-    not back to the first 50%) and can never be undone by sliding back
-    up. Moving the slider back to 100 restores the baseline exactly, and
-    that restored state becomes the new baseline for next time.
+    """Scale every enabled Sonos speaker's volume AND the PC speaker volume
+    together, relative to a fixed baseline -- whatever they were set to the
+    last time this slider sat at 100% -- rather than to whatever they
+    currently are. Scaling from the live current values (the old behavior)
+    compounds on every press (50% twice lands on 25%, not back to the first
+    50%) and can never be undone by sliding back up. Moving the slider back
+    to 100 restores the baseline exactly, and that restored state becomes
+    the new baseline for next time.
 
     0-500% for Sonos speakers -- no hardware risk there, Sonos enforces
-    its own 100% ceiling per speaker regardless of scale. The PC boost
-    is different: it carries its own hardware-risk warning specifically
-    because a user has to deliberately drag IT to go past 100%, and
-    letting THIS control also push it upward defeats that -- a boost
-    already sitting elevated (say 150%, previously set on purpose) times
-    an innocuous-looking "turn everything up to 200%" here would
-    silently land at 300%, nowhere near either slider's own displayed
-    number. Confirmed directly: exactly this compounding pushed a real
-    boost to its 500% ceiling from a single master-volume press. So the
-    boost only ever scales DOWN through this control (capped at its
-    baseline, never above); turning it up still requires the dedicated
-    slider."""
+    its own 100% ceiling per speaker regardless of scale. The PC speaker
+    volume only ever scales DOWN through this control (capped at its
+    baseline, never above 100%): turning it up is the dedicated slider's
+    job. The PC BOOST (Advanced) is not touched at all -- it is the one
+    setting that can stress speakers, so nothing that gets dragged around
+    casually is allowed to move it; an earlier version that scaled it
+    pushed a real boost to its 500% ceiling from a single press."""
     global _master_volume_baseline
     data = request.get_json(force=True)
     percent = max(0, min(500, int(data.get("percent", 100))))
@@ -1352,21 +1496,21 @@ def api_master_volume():
         if _master_volume_baseline is None:
             _master_volume_baseline = {
                 "speakers": {s["uid"]: s["volume"] for s in speaker_mgr.list() if s["enabled"]},
-                "local_gain_percent": round(config.get("local_render_gain", 1.0) * 100),
+                "local_volume_percent": round(config.get("local_volume", 1.0) * 100),
             }
 
         scale = percent / 100.0
-        gain_scale = min(1.0, scale)  # boost: down only, never boosted BY this control
+        volume_scale = min(1.0, scale)  # PC volume: down only, never above its baseline
         for uid, base_volume in _master_volume_baseline["speakers"].items():
             speaker_mgr.set_volume(uid, round(base_volume * scale))
-        new_gain_percent = max(0, min(500, round(_master_volume_baseline["local_gain_percent"] * gain_scale)))
-        config["local_render_gain"] = new_gain_percent / 100.0
+        new_volume_percent = max(0, min(100, round(_master_volume_baseline["local_volume_percent"] * volume_scale)))
+        config["local_volume"] = new_volume_percent / 100.0
         save_config(config)
 
         if percent == 100:
             _master_volume_baseline = None
 
-    return jsonify({"ok": True, "local_gain_percent": new_gain_percent})
+    return jsonify({"ok": True, "local_volume_percent": new_volume_percent})
 
 
 @app.route("/api/level")
@@ -1456,13 +1600,26 @@ def api_set_delay():
 
 @app.route("/api/local_gain", methods=["POST"])
 def api_set_local_gain():
-    # percent: 0-500, mapped to a 0.0-5.0 multiplier applied in
-    # audio_engine's render loop. Read fresh every chunk there, so this
-    # takes effect immediately -- no render restart needed. 0-100% is the
-    # safe/no-warning zone; the dashboard shows a warning above that.
+    # The BOOST: percent 100-500, mapped to a 1.0-5.0 multiplier that
+    # audio_engine's render loop applies on top of the volume. Read fresh
+    # every chunk there, so this takes effect immediately -- no render
+    # restart needed. 100% (no boost) is the safe/no-warning setting; the
+    # dashboard shows a warning above that.
     data = request.get_json(force=True)
-    percent = max(0, min(500, int(data.get("percent", 100))))
+    percent = max(100, min(500, int(data.get("percent", 100))))
     config["local_render_gain"] = percent / 100.0
+    save_config(config)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/local_volume", methods=["POST"])
+def api_set_local_volume():
+    # The PC speaker VOLUME: percent 0-100, the plain slider on the main
+    # page (100 = the original level). Read fresh every chunk in the render
+    # loop, so it takes effect immediately.
+    data = request.get_json(force=True)
+    percent = max(0, min(100, int(data.get("percent", 100))))
+    config["local_volume"] = percent / 100.0
     save_config(config)
     return jsonify({"ok": True})
 

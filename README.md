@@ -21,8 +21,8 @@ streaming tool" combo with one thing that just runs at startup:
   auto-calibration find it) and it stays put, with a periodic background
   resync so it doesn't quietly drift over a long-running session.
 - A volume slider for your PC speakers, right next to the output picker on
-  the dashboard, that also goes past 100% to boost a quiet aux/line-out
-  speaker.
+  the dashboard (100% by default), plus a separate boost under Advanced
+  for a quiet aux/line-out speaker.
 - A dashboard that shows what's actually happening at a glance --
   how many speakers are streaming, your current sync delay, which PC
   output device is active, and a live input level meter -- instead of
@@ -33,7 +33,8 @@ streaming tool" combo with one thing that just runs at startup:
 - A reduced-bandwidth streaming option for a Sonos speaker on a weak or
   distant Wi-Fi link, independent of your PC speakers' quality.
 - Checks once per launch whether a newer version exists and shows a
-  download link if so -- see "Why the update checker exists" below.
+  download link if so, with that release's notes one click away under
+  "What's new" -- see "Why the update checker exists" below.
 - Starts automatically when you log into Windows. No app to remember to
   open.
 
@@ -54,6 +55,17 @@ speaker output back by a matching amount so both play together -- same
 idea as the "audio delay" / lip-sync offset setting on an AV receiver.
 
 ## Does PC2Sonos use your microphone? (Windows)
+
+This section exists because of a comment on r/sonos, from
+[chonny609](https://www.reddit.com/r/sonos/comments/1we1lpv/comment/p9vnj11/):
+
+> Does the app really need to access the microphone - except when performing
+> the "auto delay calc" where you place your mic between the PC and the
+> speaker? I'd like to have it off, but mic use is on by default, and AFAIK
+> Win11 only lets you allow mic access to ALL desktop apps or none
+
+Answering that honestly took a lot of changes to how PC2Sonos captures
+audio, and we appreciate the push. The answer now is:
 
 No. PC2Sonos gets your PC's audio by *loopback* capture of VB-Audio
 Virtual Cable's playback side ("CABLE Input" -- the device Windows sends
@@ -113,8 +125,11 @@ checker is the one deliberate exception to "fully offline": once per
 launch, it makes a single request to GitHub's public release API (no
 data about you or your setup goes with it) to compare your version
 against the latest release, and shows a banner with a direct download
-link if you're behind. After that one check, it's silent again for the
-rest of the session -- no polling, no background checking, nothing else
+link if you're behind. The banner also has a "What's new" toggle with that
+release's notes, so you can read what changed before deciding whether to
+update -- they come from the same single response, and reading them never
+requires downloading anything. After that one check, it's silent again for
+the rest of the session -- no polling, no background checking, nothing else
 sent anywhere.
 
 ## One-time setup
@@ -168,17 +183,20 @@ interrupts).
 The **Volume** slider in the PC speaker output card (right under the
 output picker) sets how loud PC2Sonos plays the delayed audio through
 your real PC speakers/headphones, on top of Windows' own volume for that
-device. 100% is the original, unchanged level and dragging down simply
-turns it down. It only affects the local speaker path; Sonos speakers
-keep their own independent volume control.
+device. It runs from 0% to 100%, and 100% -- the default -- is the
+original, unchanged level. It only affects the local speaker path; Sonos
+speakers keep their own independent volume control.
 
-If that device still sounds too quiet at full Windows volume (common
-with a passive speaker on a line-level aux input), go above 100%: the
-slider goes up to 500%, using a soft limiter rather than a hard clip so
-loud peaks compress gradually as they approach full scale instead of
-slamming flat. 100% is also the ceiling of the safe/no-warning zone; the
-dashboard shows a warning past it as a reminder that you're past the
-source's natural level.
+If that device still sounds too quiet at 100% volume and full Windows
+volume (common with a passive speaker on a line-level aux input), there's
+a separate **PC speaker boost** under Advanced. It goes from 100% (no
+boost, the default) up to 500%, using a soft limiter rather than a hard
+clip so loud peaks compress gradually as they approach full scale instead
+of slamming flat, and the dashboard shows a warning while it's on. It
+stacks on top of the Volume slider, and it's a separate setting on
+purpose: it is the one control that can stress speakers, so nothing you
+drag around casually -- the master volume slider included -- can change
+it.
 
 There's also a **bass/mid/treble EQ** under Advanced, local speaker path
 only (Sonos speakers keep their own EQ in the Sonos app) -- a low shelf
@@ -192,7 +210,7 @@ bass." The EQ soft-limits its own output too (same as the boost), so
 even a large boost on one band compresses gracefully instead of
 hard-clipping.
 
-**100% volume / 0dB EQ (the defaults) is what we recommend.** Both
+**100% boost / 0dB EQ (the defaults) is what we recommend.** Both
 controls go well past that on purpose, for cases like an underpowered
 aux speaker that genuinely needs it -- but pushing either far enough can
 stress or damage underpowered speakers/amps over time, not just change
@@ -202,16 +220,16 @@ your hardware.
 ### Optional: scale everything up or down at once
 
 The **master volume** slider on the Sonos speakers card scales every
-enabled speaker's volume and the PC boost together, from wherever each
-one is currently set. It's relative, not absolute: drag it to 50% and
-everything drops by half, PC boost included; drag it back to 100% and
-you get back exactly what you started with, not just whatever the last
-press happened to leave behind. Above 100% turns your Sonos speakers up
-together (up to 100% each, same as always) -- but deliberately **not**
-the PC boost, which only ever moves down through this slider. Raising
-the boost itself still needs its own dedicated slider below, since that
-one carries a hardware-risk warning this control shouldn't be able to
-trigger as a side effect of an innocuous "turn everything up" press.
+enabled speaker's volume and the PC speaker volume together, from
+wherever each one is currently set. It's relative, not absolute: drag it
+to 50% and everything drops by half; drag it back to 100% and you get
+back exactly what you started with, not just whatever the last press
+happened to leave behind. Above 100% turns your Sonos speakers up
+together (up to 100% each, same as always); the PC speaker volume only
+ever moves down through this slider, never above where you had it. The PC
+speaker boost under Advanced is never touched by it, since that's the
+one setting that carries a hardware-risk warning and shouldn't be
+movable as a side effect of an innocuous "turn everything up" press.
 Handy for a quick "turn it all down" (or Sonos up) moment without
 losing track of each speaker's individual level -- the per-speaker
 sliders below stay fully adjustable the whole time. Once you're back at
