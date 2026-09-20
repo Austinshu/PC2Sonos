@@ -204,16 +204,21 @@ STYLE_BLOCK = """
   .level-track { background:#333; border-radius:99px; height:10px; margin-top:3px; overflow:hidden; }
   .level-fill { background:#1db954; height:100%; width:0%; border-radius:99px; transition:width .12s linear; }
 
-  /* tile grid for the smaller/uniform-height cards, wrapping like a
-     dashboard instead of stacking in one long column. Speakers is
-     deliberately NOT part of this grid -- it holds a variable-length
-     list and used to share a row with short cards like "PC speaker
-     output", and since a CSS grid row's height is set by its tallest
-     cell, that stranded the short ones with a big empty gap below their
-     own content. Standing on its own above the grid, its height only
-     ever affects itself. Collapses to a single column below the media
-     query near the bottom of this block. */
-  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:14px; align-items:start; }
+  /* Two balanced columns, grouped by what the cards are about: the PC-speaker
+     cards (output + volume, sync delay) on the left and the Sonos/session
+     cards (streaming quality, sleep timer, troubleshooting) on the right come
+     out within ~25px of each other's height, so nothing is left with a void
+     beneath it. The earlier auto-fit grid sized each ROW to its tallest
+     card, which stranded the shorter ones with a gap below them, and made
+     the tall Advanced card leave a hole beside it whenever it was open --
+     so Advanced now stands on its own below the columns, full width.
+     Speakers stays above, on its own, for the same reason (variable-length
+     list). Stacks to one column below the media query at the bottom. */
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:stretch; margin-bottom:14px; }
+  .grid-col { display:flex; flex-direction:column; gap:14px; min-width:0; }
+  /* the two columns stretch to the same height, and the last card in the
+     shorter one takes up the (small) difference -- the bottoms line up flush */
+  .grid-col > .card:last-child { flex:1 1 auto; }
 
   .card {
     background:#1a1a1a; border:1px solid #262626; border-radius:12px;
@@ -229,13 +234,20 @@ STYLE_BLOCK = """
   .card-desc { font-size:12px; color:#999; line-height:1.5; margin:0; }
   details.card .card-header { margin-bottom:0; }
   details.card { padding:0; }
-  details.card > summary { list-style:none; }
+  /* the summary is a flex row -- arrow, then icon + title -- rather than
+     inline content: with a long title the inline version wrapped the whole
+     header below the arrow, leaving the arrow stranded on a line of its own */
+  details.card > summary {
+    list-style:none; cursor:pointer; padding:16px 18px;
+    display:flex; align-items:center; gap:8px;
+  }
   details.card > summary::-webkit-details-marker { display:none; }
   details.card > summary::before {
-    content:"\\25B8"; display:inline-block; margin-right:8px; color:#777;
+    content:"\\25B8"; flex-shrink:0; width:12px; text-align:center; color:#777;
     transition:transform .15s ease;
   }
   details.card[open] > summary::before { transform:rotate(90deg); }
+  details.card > summary .card-header { flex:1; min-width:0; }
 
   /* small "what's this?" disclosure for the longer explanatory copy --
      collapsed by default so a tile shows its controls first and the
@@ -250,6 +262,13 @@ STYLE_BLOCK = """
   .info-toggle > summary:hover { color:#aaa; }
   .info-toggle[open] > summary { color:#999; margin-bottom:6px; }
   .info-toggle .card-desc { padding-left:1px; }
+
+  /* Advanced: a full-width card whose sections sit side by side instead of
+     one long narrow column -- two across on a normal window, one on a phone */
+  .adv-body { padding:0 18px 18px; }
+  .adv-note { font-size:11px; color:#999; line-height:1.5; }
+  .adv-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:0 36px; align-items:start; }
+  .adv-section { margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a; min-width:0; }
 
   label { font-size:13px; color:#aaa; display:block; margin-bottom:8px; line-height:1.4; }
 
@@ -458,6 +477,7 @@ DASHBOARD_HTML = """
 </div>
 
 <div class="grid">
+<div class="grid-col">
 
 <div class="card">
   <div class="card-header">
@@ -484,22 +504,6 @@ DASHBOARD_HTML = """
       <span>%</span>
     </div>
   </div>
-</div>
-
-<div class="card">
-  <div class="card-header">
-    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14 0"/><path d="M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/></svg></span>
-    <span class="card-title">Sonos streaming quality</span>
-  </div>
-  <details class="info-toggle">
-    <summary>&#9432; What does this do?</summary>
-    <div class="card-desc">Full quality sends Sonos the exact captured audio (typically 44.1kHz) -- the same as always. Reduced halves the sample rate sent to Sonos only; your PC speakers are never affected. Lower bandwidth means less for a weak Wi-Fi link to a speaker to keep up with, at the cost of slightly less crisp highs -- worth trying if a speaker keeps cutting in and out.</div>
-  </details>
-  <select id="streamQuality" onchange="setStreamQuality()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
-    <option value="full">Full quality</option>
-    <option value="reduced">Reduced bandwidth</option>
-  </select>
-  <div id="streamQualityResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
 </div>
 
 <div class="card">
@@ -534,22 +538,74 @@ DASHBOARD_HTML = """
   </details>
 </div>
 
-<details class="card" style="padding:0;">
-  <summary style="cursor:pointer; padding:16px 18px;">
-    <span class="card-header" style="margin-bottom:0; display:inline-flex;">
+</div>
+<div class="grid-col">
+
+<div class="card">
+  <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14 0"/><path d="M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/></svg></span>
+    <span class="card-title">Sonos streaming quality</span>
+  </div>
+  <details class="info-toggle">
+    <summary>&#9432; What does this do?</summary>
+    <div class="card-desc">Full quality sends Sonos the exact captured audio (typically 44.1kHz) -- the same as always. Reduced halves the sample rate sent to Sonos only; your PC speakers are never affected. Lower bandwidth means less for a weak Wi-Fi link to a speaker to keep up with, at the cost of slightly less crisp highs -- worth trying if a speaker keeps cutting in and out.</div>
+  </details>
+  <select id="streamQuality" onchange="setStreamQuality()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+    <option value="full">Full quality</option>
+    <option value="reduced">Reduced bandwidth</option>
+  </select>
+  <div id="streamQualityResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg></span>
+    <span class="card-title">Sleep timer</span>
+  </div>
+  <div class="card-desc" style="margin-bottom:8px;">Stops every currently-streaming Sonos speaker after the chosen time (your PC speakers, and any speaker you turn on afterward, are unaffected).</div>
+  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+    <select id="sleepMinutes" style="padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
+      <option value="15">15 min</option>
+      <option value="30">30 min</option>
+      <option value="45">45 min</option>
+      <option value="60" selected>60 min</option>
+      <option value="90">90 min</option>
+    </select>
+    <button onclick="startSleepTimer()">Start</button>
+    <button id="cancelSleepBtn" onclick="cancelSleepTimer()" class="btn-ghost" style="display:none;">Cancel</button>
+  </div>
+  <div id="sleepTimerStatus" style="margin-top:8px; font-size:12px; color:#888;"></div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg></span>
+    <span class="card-title">Troubleshooting</span>
+  </div>
+  <button onclick="exportDiag()">Export Diagnostics</button>
+  <div id="diagResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
+</div>
+
+</div>
+</div>
+
+<details class="card advanced">
+  <summary>
+    <span class="card-header">
       <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="4" x2="5" y2="20"/><circle cx="5" cy="9" r="2" fill="currentColor" stroke="none"/><line x1="12" y1="4" x2="12" y2="20"/><circle cx="12" cy="15" r="2" fill="currentColor" stroke="none"/><line x1="19" y1="4" x2="19" y2="20"/><circle cx="19" cy="7" r="2" fill="currentColor" stroke="none"/></svg></span>
       <span class="card-title">Advanced: EQ, audio source &amp; capture method</span>
     </span>
   </summary>
-  <div style="padding:14px 18px 16px;">
-    <div style="font-size:11px; color:#999; line-height:1.5;">
+  <div class="adv-body">
+    <div class="adv-note">
       The boost and EQ below can push your speakers harder than their
       intended level, and pushing either far enough can stress or damage
       underpowered speakers/amps over time. <strong>The defaults (100%
       boost, 0dB EQ) are what we recommend</strong> -- adjusting past them
       is at your own risk to your hardware, not just audio quality.
     </div>
-    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+    <div class="adv-grid">
+    <div class="adv-section">
       <label style="margin-bottom:2px;">PC speaker boost</label>
       <details class="info-toggle">
         <summary>&#9432; What does this do?</summary>
@@ -570,7 +626,7 @@ DASHBOARD_HTML = """
         &#9888; The boost is on. The higher you go, the more the limiter has to compress to stay clean, and the harder your speakers are pushed.
       </div>
     </div>
-    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+    <div class="adv-section">
       <label style="margin-bottom:2px;">PC speaker EQ</label>
       <details class="info-toggle">
         <summary>&#9432; What does this do?</summary>
@@ -604,7 +660,7 @@ DASHBOARD_HTML = """
         &#9888; Past &plusmn;6dB starts sounding less like "more/less bass" and more like a different speaker -- large boosts can also introduce noise.
       </div>
     </div>
-    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+    <div class="adv-section">
       <div style="display:flex; align-items:center; justify-content:space-between;">
         <label style="margin-bottom:0;">Audio source &mdash; what PC2Sonos sends to Sonos</label>
         <button onclick="loadAudioSessions()" class="btn-ghost">Refresh</button>
@@ -620,11 +676,11 @@ DASHBOARD_HTML = """
       <div id="captureAppList" style="display:flex; flex-direction:column; gap:2px; max-height:180px; overflow-y:auto; margin-top:4px; padding:6px; background:#111; border:1px solid #333; border-radius:6px;"></div>
       <div id="captureSourceResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
     </div>
-    <div id="captureMethodBlock" style="display:none; margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
+    <div id="captureMethodBlock" class="adv-section" style="display:none;">
       <label style="margin-bottom:2px;">Capture method &mdash; how PC2Sonos reads your PC's audio</label>
       <details class="info-toggle">
         <summary>&#9432; What's the difference?</summary>
-        <div class="card-desc"><strong>Loopback</strong> listens to what Windows is already playing into the virtual cable. Windows doesn't count that as microphone access, so PC2Sonos isn't listed under Privacy &amp; security &gt; Microphone and the mic never shows as in use. The <strong>recording device</strong> method opens the cable as if it were a microphone: it carries the identical audio, but Windows treats it as mic access the whole time PC2Sonos runs. Switch to it only if loopback ever gives you silence &mdash; PC2Sonos also falls back to it by itself if loopback can't be used. Switching reconnects your Sonos speakers for a few seconds.</div>
+        <div class="card-desc"><strong>Loopback</strong> listens to what Windows is already playing into the virtual cable. Windows doesn't count that as microphone access, so PC2Sonos isn't listed under Privacy &amp; security &gt; Microphone and the mic never shows as in use. The <strong>recording device</strong> method opens the cable as if it were a microphone: it carries the identical audio, but Windows treats it as mic access the whole time PC2Sonos runs. Switch to it only if loopback ever gives you silence &mdash; PC2Sonos also falls back to it by itself if loopback can't be used. Switching may reconnect your Sonos speakers for a few seconds.</div>
       </details>
       <select id="captureMethod" onchange="setCaptureMethod()" style="padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px; max-width:100%;">
         <option value="loopback">Loopback &mdash; no microphone access (recommended)</option>
@@ -632,39 +688,9 @@ DASHBOARD_HTML = """
       </select>
       <div id="captureMethodStatus" style="margin-top:8px; font-size:12px; color:#888;"></div>
     </div>
+    </div>
   </div>
 </details>
-
-<div class="card">
-  <div class="card-header">
-    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg></span>
-    <span class="card-title">Sleep timer</span>
-  </div>
-  <div class="card-desc" style="margin-bottom:8px;">Stops every currently-streaming Sonos speaker after the chosen time (your PC speakers, and any speaker you turn on afterward, are unaffected).</div>
-  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-    <select id="sleepMinutes" style="padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
-      <option value="15">15 min</option>
-      <option value="30">30 min</option>
-      <option value="45">45 min</option>
-      <option value="60" selected>60 min</option>
-      <option value="90">90 min</option>
-    </select>
-    <button onclick="startSleepTimer()">Start</button>
-    <button id="cancelSleepBtn" onclick="cancelSleepTimer()" class="btn-ghost" style="display:none;">Cancel</button>
-  </div>
-  <div id="sleepTimerStatus" style="margin-top:8px; font-size:12px; color:#888;"></div>
-</div>
-
-<div class="card">
-  <div class="card-header">
-    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg></span>
-    <span class="card-title">Troubleshooting</span>
-  </div>
-  <button onclick="exportDiag()">Export Diagnostics</button>
-  <div id="diagResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
-</div>
-
-</div>
 """ + (BLACKHOLE_CREDIT_LINE if sys.platform == "darwin" else VB_CREDIT_LINE) + """
 
 <div class="modal-overlay" id="diagModal">
@@ -1028,7 +1054,7 @@ async function setCaptureMethod(){
   _captureMethodBusy = true;
   sel.disabled = true;
   el.style.color = '#888';
-  el.textContent = 'Switching... your Sonos speakers reconnect for a few seconds.';
+  el.textContent = 'Switching... your Sonos speakers may reconnect for a few seconds.';
   try {
     const res = await fetch('/api/capture_method', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({method: sel.value})});

@@ -152,8 +152,16 @@ assert r.status_code == 200 and b"Sonos speakers" in r.data, "expected the full 
 # the range that stresses speakers
 _page = r.data.decode("utf-8")
 assert _page.count('id="localVolume"') == 1 and _page.count('id="localGain"') == 1
-assert _page.index("PC speaker output") < _page.index('id="localVolume"') < _page.index("Advanced:") \
-    < _page.index('id="localGain"'), "volume in the PC speaker output card, boost inside Advanced"
+assert _page.index('<span class="card-title">PC speaker output') < _page.index('id="localVolume"') \
+    < _page.index('<span class="card-title">Advanced:') < _page.index('id="localGain"'), \
+    "volume in the PC speaker output card, boost inside Advanced"
+# layout: two balanced columns of short cards, with Advanced full-width BELOW them
+# (a tall open Advanced card inside the columns left a hole beside it), and its
+# summary a plain flex row so a long title can't wrap the header below the arrow
+assert _page.count('class="grid-col"') == 2
+assert _page.index('Troubleshooting</span>') < _page.index('class="card advanced"'), \
+    "Advanced must sit below the two columns, not inside them"
+assert 'class="card advanced"' in _page and 'display:inline-flex;">\n      <span class="card-icon">' not in _page
 print("  / OK")
 
 r = client.get("/api/speakers")

@@ -174,6 +174,28 @@ release description can inject content into the dashboard), and the box
 scrolls inside a height cap of about 45% of the window, so it fits a
 standard-height monitor as comfortably as a widescreen one.
 
+### A tidier dashboard
+
+The dashboard's cards used to sit in an auto-fitting grid whose rows were as
+tall as their tallest card. That left visible gaps beneath the shorter ones
+(under "PC speaker output" and "Sonos streaming quality", for example) and a
+large hole beside the Advanced card whenever it was open. In v1.5 the cards
+are arranged in two columns grouped by what they're about: the PC-speaker cards
+(output with its new Volume slider, and sync delay) on the left, and the
+Sonos/session cards (streaming quality, sleep timer, troubleshooting) on the
+right. The gap between every pair of cards is the same, the two columns end
+flush with each other, and each card has more room to work with -- the sync
+delay card's Auto button now sits on the same line as its slider instead of
+wrapping underneath it.
+
+Advanced is now a full-width section under the two columns rather than the
+tallest card in the grid. Opened, its four settings -- boost, EQ, audio source
+and capture method -- sit side by side in two columns instead of one long
+narrow strip. Its header is fixed too: the expand arrow, the icon and the title
+share one line, where before a long title wrapped underneath and left the arrow
+stranded on a line of its own. On a narrower window, or a phone, everything
+stacks into a single column with no sideways scrolling.
+
 ### Housekeeping
 
 The last leftover code from an early paid-download idea has been removed from
