@@ -16,10 +16,11 @@ streaming tool" combo with one thing that just runs at startup:
   indicator stays off (see "Does PC2Sonos use your microphone?" below).
 - Choose what gets streamed: the whole system (default), or just one
   application's audio, so the rest of your PC's sound stays off Sonos.
-- Delays your PC's *own* local speakers to match Sonos's playback delay,
+- Delays your PC's *own* local speaker(s) to match Sonos's playback delay,
   so the two don't echo each other -- you set the offset once (or let
   auto-calibration find it) and it stays put, with a periodic background
-  resync so it doesn't quietly drift over a long-running session.
+  resync so it doesn't quietly drift over a long-running session. Pick more
+  than one local output and all of them play the delayed feed at once.
 - A volume slider for your PC speakers, right next to the output picker on
   the dashboard (100% by default), plus a separate boost under Advanced
   for a quiet aux/line-out speaker.
@@ -42,6 +43,69 @@ Everything runs on your machine. There's no cloud dependency, no
 telemetry, no account, and no license check -- it's a local web dashboard
 (default `http://127.0.0.1:5757`) plus a background audio/streaming
 engine, fully offline apart from that one-time-per-launch update check.
+
+## What's new in v1.5.3
+
+v1.5.3 adds three things to the dashboard and removes one. It also fixes a
+set of bugs found in a review of the new code before release. Everything
+described under v1.5.2 and earlier below is part of this release as well.
+
+**More than one PC speaker at once.** Under Advanced, the PC speaker output
+is now a list of checkboxes instead of a single dropdown. Tick more than one
+(headphones and desk speakers, say, or a monitor's speakers too) and each one
+plays the same delayed audio, held to the same sync delay. Each device gets
+its own connection and buffer, so a slow or unplugged device doesn't stall
+the others. If you leave every box unticked, PC2Sonos picks the first real
+output it finds, the same as before. A PC speaker you picked in an older
+version carries over as the one ticked box.
+
+**Play a file, or a device plugged into the PC.** Advanced has a new "Play a
+file or an external device instead" section. It can take over from the
+normal audio source for a while and send something else through the same
+delayed PC speakers and Sonos speakers:
+
+- **From a file:** upload a WAV, FLAC, OGG or MP3 and press Play. The
+  dashboard shows the position as it plays. When the file ends, or you press
+  Stop, streaming goes back to whatever Audio source is set to. You don't
+  need ffmpeg or anything else installed.
+- **From a device:** pick a real input device (a USB audio interface, a
+  mixer, a turntable preamp) and press Start. Stop hands back to the normal
+  source.
+
+**The test-tone calibration is gone.** The optional "Calibrate with test
+tone" button was the only part of PC2Sonos that ever used your real
+microphone. Auto calibration, which reads Sonos's own playback clock and
+never listens to the room, gives the same result without a microphone, so
+the button has been removed. PC2Sonos now never uses your real microphone,
+on Windows or macOS, and the macOS permission prompt says so. The dashboard
+also shows the version number at the bottom of the page.
+
+**Fixes found in review.**
+
+- If a file wouldn't decode or an input device wouldn't open, or dropped out
+  partway through, Sonos and the PC speakers went silent until you changed
+  the audio source by hand. Now PC2Sonos goes back to the normal source on
+  its own.
+- Changing the audio source or capture method while a file or external
+  device was playing restarted live capture underneath it, so two sources
+  fought over the same stream. Now the file or device playback is stopped
+  cleanly first.
+- Pressing Stop after a file had already finished, or after a device had
+  already dropped out, restarted live capture a second time, which caused a
+  short gap in the audio. The code was still holding references to threads
+  that had ended. Now Stop does nothing in that case.
+- If you pressed Play-file and Start-device at almost the same moment, the
+  two could start together. A new lock makes sure only one of them takes
+  over.
+- The PC speaker threads shared a table of device names without a lock,
+  which could cause errors when more than one device was in use. It now has
+  a lock.
+- If the same output appeared twice in the saved PC speaker list, one of
+  its playback threads was left running and nothing could stop it. Duplicate
+  entries are now ignored.
+- Removed references to the old microphone calibration from the docs and
+  code comments, and cleaned out code that nothing used any more.
+- Added regression tests for all of the above.
 
 ## What's new in v1.5.2
 
@@ -188,10 +252,11 @@ PC2Sonos also falls back to the recording device automatically -- with an
 orange notice at the top of the dashboard explaining why -- if loopback can't
 be used: the cable's loopback device is missing, it won't open after three
 attempts, or the cable has been switched to a surround format. Audio never
-stops just because the newer method didn't work. The one thing that still
-uses a real microphone is the optional "Calibrate with test tone" button; the
-default Auto calibration measures Sonos's own playback clock and never
-touches one. macOS is unchanged in this respect: it has no loopback
+stops just because the newer method didn't work. (A later release removed
+the only other thing that ever touched a real microphone, an optional
+test-tone calibration button -- see "Does PC2Sonos use your microphone?"
+below for the current, simpler picture.) macOS is unchanged in this
+respect: it has no loopback
 equivalent, so BlackHole is still read as an input (see the macOS section).
 
 ### Steadier capture
@@ -356,12 +421,10 @@ You can still see that behavior in two cases, and the dashboard says so:
 - You picked **Recording device** under Advanced > Capture method. There's
   no reason to unless loopback ever gives you silence.
 
-The one thing that *does* briefly use a real microphone is the optional
-"Calibrate with test tone" button on the dashboard: a manual, ~6-second
-recording, off by default (the default Auto calibration measures Sonos's
-own playback clock instead and never touches a microphone, real or
-virtual, at all). Per-app capture ("Audio source" under Advanced) doesn't
-use a microphone either.
+Auto-calibration (the "Auto" button next to the sync-delay slider) also
+never touches a microphone -- it measures Sonos's own playback clock
+instead of listening to the room. Per-app capture ("Audio source" under
+Advanced) doesn't use a microphone either.
 
 macOS is different -- it has no loopback equivalent, so it still has to
 read BlackHole as an input; see the macOS section below.
@@ -593,11 +656,9 @@ plays a delayed copy to the Mac's own speakers and streams to Sonos.
   the same as any other Mac app that routes system audio through a
   virtual device (Loopback, Audio Hijack, etc). That indicator does
   *not* mean your actual mic/room audio is being captured -- BlackHole
-  only ever carries your Mac's own audio. The one thing that does touch
-  your real microphone is the optional "Calibrate with test tone" button
-  on the dashboard, a manual, ~6-second recording, off by default (the
-  default Auto calibration measures Sonos's own playback clock instead
-  and never touches the mic at all). The app asks for the permission on
+  only ever carries your Mac's own audio. Auto-calibration doesn't touch
+  the mic either -- it measures Sonos's own playback clock rather than
+  listening to the room. The app asks for the permission on
   launch (`macos_app.py`); without it CoreAudio delivers silence with no
   error, so the dashboard shows a banner explaining that -- and keeps
   showing a calmer one afterward, explaining what the indicator means,
@@ -714,8 +775,8 @@ is shared with tools like SWYH.
 - `sonos_ctl.py` -- Sonos discovery/control via SoCo, including the
   background watchdog that restarts dropped streams and periodically
   resyncs long-running ones to prevent drift
-- `calibration.py` -- automatic sync-delay measurement (silent, from
-  Sonos's own playback clock, and an optional test-tone + microphone method)
+- `calibration.py` -- automatic sync-delay measurement, from Sonos's own
+  playback clock
 - `updater.py` / `version.py` -- the once-per-launch update check (see
   "Why the update checker exists" above)
 - `webapp.py` -- Flask dashboard + the WAV endpoints Sonos speakers pull

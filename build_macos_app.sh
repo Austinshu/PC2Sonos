@@ -35,7 +35,7 @@ plist_set LSMinimumSystemVersion string 12.0
 # macOS treats reading from BlackHole as microphone access. Without this
 # key macOS silently denies audio input, and terminates the app when it
 # asks for permission. Keep the wording free of quotes.
-plist_set NSMicrophoneUsageDescription string "PC2Sonos captures the audio your Mac plays through the BlackHole virtual device, which macOS treats as a microphone. The optional test-tone calibration also listens through your real microphone."
+plist_set NSMicrophoneUsageDescription string "PC2Sonos captures the audio your Mac plays through the BlackHole virtual device, which macOS treats as a microphone. Your actual microphone is never used."
 plist_set NSAppleEventsUsageDescription string "Used to add PC2Sonos to your Login Items and to open Terminal for the BlackHole installer."
 for key in NSMicrophoneUsageDescription NSAppleEventsUsageDescription LSUIElement CFBundleVersion; do
   /usr/bin/plutil -extract "$key" raw -o - "$PLIST" >/dev/null || { echo "Info.plist is missing $key"; exit 1; }

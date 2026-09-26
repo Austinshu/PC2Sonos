@@ -33,7 +33,7 @@ class FakeStream:
 
 class FakePyAudio:
     def get_device_count(self):
-        return 3
+        return 4
 
     def get_device_info_by_index(self, i):
         if i == 0:
@@ -46,8 +46,14 @@ class FakePyAudio:
             return {"name": "Speakers (Steam Streaming Microphone)",
                     "maxInputChannels": 0, "maxOutputChannels": 2,
                     "defaultSampleRate": 48000.0, "hostApi": 0}
-        return {"name": "Speakers (Realtek(R) Audio)",
-                "maxInputChannels": 0, "maxOutputChannels": 2,
+        if i == 2:
+            return {"name": "Speakers (Realtek(R) Audio)",
+                    "maxInputChannels": 0, "maxOutputChannels": 2,
+                    "defaultSampleRate": 44100.0, "hostApi": 0}
+        # a real (non-virtual) input device, e.g. a USB audio interface --
+        # the external-input picker's one pickable device in these tests
+        return {"name": "Microphone (USB Audio CODEC)",
+                "maxInputChannels": 2, "maxOutputChannels": 0,
                 "defaultSampleRate": 44100.0, "hostApi": 0}
 
     def get_host_api_info_by_type(self, t):
@@ -102,6 +108,12 @@ assert by_name["Speakers (Steam Streaming Microphone)"]["likely_virtual"] is Tru
 assert by_name["Speakers (Realtek(R) Audio)"]["likely_virtual"] is False
 print("  OK")
 
+print("[test] list_input_devices excludes the virtual cable...")
+in_devices = {d["name"] for d in audio_engine.list_input_devices()}
+assert in_devices == {"Microphone (USB Audio CODEC)"}, \
+    f"expected only the one real input device, got {in_devices}"
+print("  OK")
+
 print("[test] Broadcaster fan-out...")
 b = audio_engine.Broadcaster()
 sid1, q1 = b.subscribe()
@@ -129,7 +141,7 @@ print("[test] capture_loop/render_loop run without crashing (short burst)...")
 stop_event = threading.Event()
 audio_engine.config["local_delay_ms"] = 50
 t1 = threading.Thread(target=audio_engine.capture_loop, args=(stop_event,), daemon=True)
-t2 = threading.Thread(target=audio_engine.render_loop, args=(stop_event,), daemon=True)
+t2 = threading.Thread(target=audio_engine.render_loop, args=(stop_event, ""), daemon=True)
 t1.start()
 t2.start()
 time.sleep(1.0)
@@ -137,6 +149,185 @@ stop_event.set()
 t1.join(timeout=2)
 t2.join(timeout=2)
 assert not t1.is_alive() and not t2.is_alive(), "capture/render threads did not stop cleanly"
+print("  OK")
+
+
+def _cleanup_capture_thread():
+    """Stops whatever live-capture thread is currently running (if any) so
+    it can't interfere with a later test -- mirrors the manual t1/t2
+    cleanup above, but for whatever restart_capture() most recently
+    started under audio_engine's own module-level globals."""
+    if audio_engine._capture_stop_event is not None:
+        audio_engine._capture_stop_event.set()
+    if audio_engine._capture_thread is not None:
+        audio_engine._capture_thread.join(timeout=3)
+
+
+print("[test] file_playback: decodes a real file, publishes it, then hands capture back...")
+import wave  # noqa: E402
+import tempfile  # noqa: E402
+import numpy as np  # noqa: E402
+from pathlib import Path  # noqa: E402
+import file_playback  # noqa: E402
+
+_wav_path = Path(tempfile.gettempdir()) / "pc2sonos_test_tone.wav"
+with wave.open(str(_wav_path), "wb") as wf:
+    wf.setnchannels(2)
+    wf.setsampwidth(2)
+    wf.setframerate(8000)
+    tone = np.repeat(np.arange(2000, dtype=np.int16), 2)  # 0.25s, stereo interleaved
+    wf.writeframes(tone.tobytes())
+
+sid_fp, q_fp = audio_engine.broadcaster.subscribe(maxlen=200)
+file_playback.start(_wav_path)
+for _ in range(40):
+    if file_playback.get_status()["playing"]:
+        break
+    time.sleep(0.05)
+assert file_playback.get_status()["playing"], "file playback never reported started"
+assert file_playback.get_status()["filename"] == _wav_path.name
+
+chunk = q_fp.get(timeout=2)
+assert len(chunk) > 0, "expected real PCM data published from the file"
+
+for _ in range(60):  # let the short file play out to completion on its own
+    if not file_playback.get_status()["playing"]:
+        break
+    time.sleep(0.05)
+assert not file_playback.get_status()["playing"], "file playback should stop when the file ends"
+audio_engine.broadcaster.unsubscribe(sid_fp)
+_wav_path.unlink(missing_ok=True)
+
+for _ in range(40):  # reaching EOF (not an explicit Stop) must hand capture back on its own
+    if audio_engine._capture_thread is not None and audio_engine._capture_thread.is_alive():
+        break
+    time.sleep(0.05)
+assert audio_engine._capture_thread is not None and audio_engine._capture_thread.is_alive(), \
+    "live capture should auto-resume once a played file reaches its end"
+_cleanup_capture_thread()
+print("  OK (auto-resumed live capture after end-of-file)")
+
+print("[test] external input: captures from a real device, then hands capture back on Stop...")
+audio_engine.start_external_input("Microphone (USB Audio CODEC)")
+for _ in range(40):
+    if audio_engine.get_external_input_status()["active"]:
+        break
+    time.sleep(0.05)
+status = audio_engine.get_external_input_status()
+assert status == {"active": True, "device": "Microphone (USB Audio CODEC)"}, status
+
+audio_engine.stop_external_input()
+for _ in range(40):
+    if not audio_engine.get_external_input_status()["active"]:
+        break
+    time.sleep(0.05)
+assert audio_engine.get_external_input_status()["active"] is False
+for _ in range(40):  # explicit Stop must also hand capture back
+    if audio_engine._capture_thread is not None and audio_engine._capture_thread.is_alive():
+        break
+    time.sleep(0.05)
+assert audio_engine._capture_thread is not None and audio_engine._capture_thread.is_alive(), \
+    "live capture should resume once external input is explicitly stopped"
+_cleanup_capture_thread()
+print("  OK")
+
+print("[test] file playback and external input are mutually exclusive...")
+# recreate the tone file (the earlier test deleted it), longer this time so
+# it's still playing when external input tries to take over
+with wave.open(str(_wav_path), "wb") as wf:
+    wf.setnchannels(2)
+    wf.setsampwidth(2)
+    wf.setframerate(8000)
+    wf.writeframes(np.repeat(np.arange(8000, dtype=np.int16), 2).tobytes())  # 1s -- long enough to still be playing
+file_playback.start(_wav_path)
+for _ in range(40):
+    if file_playback.get_status()["playing"]:
+        break
+    time.sleep(0.05)
+assert file_playback.get_status()["playing"], "setup: file should be playing before the exclusivity check"
+
+audio_engine.start_external_input("Microphone (USB Audio CODEC)")
+for _ in range(40):
+    if audio_engine.get_external_input_status()["active"]:
+        break
+    time.sleep(0.05)
+assert audio_engine.get_external_input_status()["active"], "external input should have started"
+assert not file_playback.get_status()["playing"], \
+    "starting external input must stop file playback, not run both at once"
+
+audio_engine.stop_external_input()
+for _ in range(40):
+    if not audio_engine.get_external_input_status()["active"]:
+        break
+    time.sleep(0.05)
+_wav_path.unlink(missing_ok=True)
+_cleanup_capture_thread()
+print("  OK")
+
+print("[test] file_playback.stop() after natural end-of-file is a safe no-op...")
+with wave.open(str(_wav_path), "wb") as wf:
+    wf.setnchannels(2)
+    wf.setsampwidth(2)
+    wf.setframerate(8000)
+    wf.writeframes(np.repeat(np.arange(500, dtype=np.int16), 2).tobytes())  # ~0.06s -- ends almost immediately
+file_playback.start(_wav_path)
+for _ in range(40):
+    if not file_playback.get_status()["playing"]:
+        break
+    time.sleep(0.05)
+assert not file_playback.get_status()["playing"], "setup: short file should have already finished"
+for _ in range(40):  # let the natural-end restart_capture() actually land
+    if audio_engine._capture_thread is not None and audio_engine._capture_thread.is_alive():
+        break
+    time.sleep(0.05)
+file_playback.stop()  # must not raise ("cannot join current thread") or restart capture a second time
+assert audio_engine._capture_thread is not None and audio_engine._capture_thread.is_alive(), \
+    "live capture should still be the one thing running after a stale stop() call"
+_wav_path.unlink(missing_ok=True)
+_cleanup_capture_thread()
+print("  OK")
+
+print("[test] a file that fails to open still hands capture back to live...")
+_bad_path = Path(tempfile.gettempdir()) / "pc2sonos_test_does_not_exist.wav"
+_bad_path.unlink(missing_ok=True)
+file_playback.start(_bad_path)
+for _ in range(40):
+    if audio_engine._capture_thread is not None and audio_engine._capture_thread.is_alive():
+        break
+    time.sleep(0.05)
+assert audio_engine._capture_thread is not None and audio_engine._capture_thread.is_alive(), \
+    "a file that can't be opened must still hand capture back, not leave everything silent"
+assert not file_playback.get_status()["playing"]
+_cleanup_capture_thread()
+print("  OK")
+
+print("[test] restart_capture() (an unrelated Audio source/Capture method change) evicts file playback...")
+with wave.open(str(_wav_path), "wb") as wf:
+    wf.setnchannels(2)
+    wf.setsampwidth(2)
+    wf.setframerate(8000)
+    wf.writeframes(np.repeat(np.arange(8000, dtype=np.int16), 2).tobytes())  # 1s -- still playing when we interrupt it
+file_playback.start(_wav_path)
+for _ in range(40):
+    if file_playback.get_status()["playing"]:
+        break
+    time.sleep(0.05)
+assert file_playback.get_status()["playing"], "setup: file should be playing before the eviction check"
+
+audio_engine.restart_capture()  # e.g. toggling Audio source/Capture method while a file happens to be playing
+for _ in range(40):
+    if not file_playback.get_status()["playing"]:
+        break
+    time.sleep(0.05)
+assert not file_playback.get_status()["playing"], \
+    "restart_capture() must stop file playback first, not run live capture alongside it"
+for _ in range(40):
+    if audio_engine._capture_thread is not None and audio_engine._capture_thread.is_alive():
+        break
+    time.sleep(0.05)
+assert audio_engine._capture_thread is not None and audio_engine._capture_thread.is_alive()
+_wav_path.unlink(missing_ok=True)
+_cleanup_capture_thread()
 print("  OK")
 
 print("[test] webapp Flask routes...")
@@ -184,13 +375,13 @@ assert "Speakers (Steam Streaming Microphone)" not in names, \
 assert "Speakers (Realtek(R) Audio)" in names
 print("  /api/devices OK (virtual outputs hidden from the picker)")
 
-r = client.post("/api/render_device", json={"device": "Speakers (Realtek(R) Audio)"})
+r = client.post("/api/render_device", json={"devices": ["Speakers (Realtek(R) Audio)"]})
 assert r.status_code == 200
-assert webapp.config["render_device_substr"] == "Speakers (Realtek(R) Audio)"
-time.sleep(0.3)  # let the restarted render thread open its stream
-assert audio_engine.get_current_render_device_name() == "Speakers (Realtek(R) Audio)"
-audio_engine._render_stop_event.set()  # clean up the thread this test started
-audio_engine._render_thread.join(timeout=2)
+assert webapp.config["render_devices"] == ["Speakers (Realtek(R) Audio)"]
+time.sleep(0.7)  # let the restarted render thread clear old state and open its stream
+                 # (_render_session has its own internal 0.5s settle wait)
+assert audio_engine.get_current_render_device_names() == ["Speakers (Realtek(R) Audio)"]
+audio_engine._stop_all_render_sessions()  # clean up the thread this test started
 print("  /api/render_device OK (explicit device switch works)")
 
 r = client.post("/api/local_gain", json={"percent": 150})
@@ -517,12 +708,12 @@ class _LockstepPyAudio(FakePyAudio):
 _real_pa_for_render = audio_engine._pa
 audio_engine._pa = _LockstepPyAudio()
 _saved_render_cfg = {k: audio_engine.config.get(k) for k in
-                     ("local_delay_ms", "render_device_substr", "local_eq_bass_db", "sample_rate", "channels")}
-audio_engine.config.update(local_delay_ms=0, render_device_substr="", local_eq_bass_db=0.0,
+                     ("local_delay_ms", "local_eq_bass_db", "sample_rate", "channels")}
+audio_engine.config.update(local_delay_ms=0, local_eq_bass_db=0.0,
                            sample_rate=44100, channels=2)
 _before = set(audio_engine.broadcaster._subs)
 _stop = threading.Event()
-_rt = threading.Thread(target=audio_engine.render_loop, args=(_stop,), daemon=True)
+_rt = threading.Thread(target=audio_engine.render_loop, args=(_stop, ""), daemon=True)
 _rt.start()
 for _ in range(100):
     _new = set(audio_engine.broadcaster._subs) - _before
@@ -975,12 +1166,11 @@ finally:
     audio_engine.time = _real_engine_time
     audio_engine._restart_downstream = _real_restart_downstream
     audio_engine.config["sample_rate"], audio_engine.config["channels"] = _saved_format
-    for _t, _ev in ((audio_engine._capture_thread, audio_engine._capture_stop_event),
-                    (audio_engine._render_thread, audio_engine._render_stop_event)):
-        if _ev is not None:
-            _ev.set()
-        if _t is not None:
-            _t.join(timeout=3)
+    if audio_engine._capture_stop_event is not None:
+        audio_engine._capture_stop_event.set()
+    if audio_engine._capture_thread is not None:
+        audio_engine._capture_thread.join(timeout=3)
+    audio_engine._stop_all_render_sessions()
     for _k, _v in _saved_capture_cfg.items():
         audio_engine.config[_k] = _v
 
@@ -990,8 +1180,7 @@ assert DEFAULT_CONFIG["capture_method"] == ("loopback" if sys.platform == "win32
 # the real downstream restart (render path + Sonos reconnect) must run cleanly with no speakers around
 audio_engine._restart_downstream()
 time.sleep(0.2)
-audio_engine._render_stop_event.set()
-audio_engine._render_thread.join(timeout=3)
+audio_engine._stop_all_render_sessions()
 print("  OK")
 
 wav = webapp.wav_header(44100, 2, 2)
@@ -1391,46 +1580,8 @@ loop_thread.join(timeout=2)
 sonos_ctl.speaker_mgr.rediscover = orig_rediscover
 print("  OK")
 
-print("[test] calibration DSP core (chirp + cross-correlation)...")
-import numpy as np  # noqa: E402
-import calibration  # noqa: E402
-
-np.random.seed(12345)  # deterministic -- this test must not be flaky
-RATE = 44100
-true_delay_ms = 1730  # a made-up "Sonos took this long" ground truth
-pc_offset_ms = 40      # a made-up "PC hardware/driver latency" ground truth
-
-sig = calibration.make_chirp_signal(RATE)
-n_total = int(RATE * 6.0)
-recording = np.random.normal(0, 0.01, n_total)  # background hiss, like a real room
-
-
-def _stamp(rec, at_ms, amplitude):
-    start = int(RATE * at_ms / 1000)
-    end = start + len(sig)
-    if end <= len(rec):
-        rec[start:end] += sig * amplitude
-
-
-_stamp(recording, pc_offset_ms, 0.8)      # the "PC speaker" echo, quieter/closer
-_stamp(recording, true_delay_ms, 1.0)     # the "Sonos speaker" echo, further away in time
-
-hits = calibration.find_echo_times(recording, sig, RATE)
-assert len(hits) >= 2, f"expected to find both echoes, got {hits}"
-measured_delay_ms = (hits[1][0] - hits[0][0]) * 1000
-expected = true_delay_ms - pc_offset_ms
-assert abs(measured_delay_ms - expected) < 5, (
-    f"expected ~{expected}ms between echoes, measured {measured_delay_ms}ms")
-print(f"  correctly recovered {measured_delay_ms:.1f}ms (expected ~{expected}ms) OK")
-
-# pure silence/noise (no chirp at all) must NOT produce two confident
-# fake hits -- a failed calibration should say so, not report a bogus number
-noise_only = np.random.normal(0, 0.01, n_total)
-hits_noise = calibration.find_echo_times(noise_only, sig, RATE)
-assert len(hits_noise) < 2, f"noise-only recording should not yield 2 confident hits, got {hits_noise}"
-print("  correctly reports no confident match on pure noise OK")
-
 print("[test] run_calibration_silent() fails clean with no Sonos speakers enabled...")
+import calibration  # noqa: E402
 import sonos_ctl as _sc  # noqa: E402
 _sc.speaker_mgr.speakers.clear()
 webapp.config["speakers"].clear()

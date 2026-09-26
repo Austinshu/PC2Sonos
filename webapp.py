@@ -10,12 +10,21 @@ import threading
 import time
 
 from flask import Flask, Response, jsonify, render_template_string, request
+from werkzeug.utils import secure_filename
 
-from audio_engine import CHUNK, broadcaster, list_output_devices, restart_render, restart_capture, get_current_render_device_name, get_lan_ip
-from config import config, save_config, PASSWORD_PATH
+from audio_engine import (CHUNK, broadcaster, list_output_devices, list_input_devices,
+                          restart_render, restart_capture, get_current_render_device_names,
+                          get_lan_ip, start_external_input, stop_external_input,
+                          get_external_input_status)
+from config import config, save_config, PASSWORD_PATH, APP_DIR
 from sonos_ctl import speaker_mgr
+from version import VERSION
+import file_playback
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # generous cap on an uploaded audio file
+
+UPLOAD_DIR = APP_DIR / "uploads"
 
 # The rate the Sonos leg is downsampled to in "reduced" streaming-quality
 # mode (see config.sonos_stream_quality) -- half of the standard 44100
@@ -486,9 +495,9 @@ DASHBOARD_HTML = """
   </div>
   <details class="info-toggle">
     <summary>&#9432; What does this do?</summary>
-    <div class="card-desc">This is the key setting for keeping your PC's own speakers in sync with Sonos: it's WHICH physical speaker/headphones PC2Sonos plays the delayed audio to. PC2Sonos auto-picks the first real output it finds, which is usually right -- but if your PC speakers don't seem to be playing the delayed feed at all, or you have more than one output connected (headphones + speakers, a monitor's speakers, etc.), check this first before touching anything else below. (Virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list -- they're never a real speaker.)</div>
+    <div class="card-desc">This is the key setting for keeping your PC's own speakers in sync with Sonos: it's WHICH physical speaker(s)/headphones PC2Sonos plays the delayed audio to. Leave everything unchecked to auto-pick the first real output found, which is usually right -- but if your PC speakers don't seem to be playing the delayed feed at all, or you have more than one output connected (headphones + speakers, a monitor's speakers, etc.), check this first before touching anything else below. Check more than one to play the delayed audio out of several local outputs at once, all held to the same delay. (Virtual/software outputs, including PC2Sonos's own VB-Cable, are left out of this list -- they're never a real speaker.)</div>
   </details>
-  <select id="renderDevice" onchange="setDevice()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
+  <div id="renderDeviceList" style="display:flex; flex-direction:column; gap:2px; max-height:180px; overflow-y:auto; padding:6px; background:#111; border:1px solid #333; border-radius:6px;"></div>
   <div style="margin-top:14px; padding-top:12px; border-top:1px solid #2a2a2a;">
     <label style="margin-bottom:2px;">Volume</label>
     <details class="info-toggle">
@@ -519,23 +528,9 @@ DASHBOARD_HTML = """
            oninput="syncDelay('number')" onchange="setDelay()"
            style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
     <span>ms</span>
-    <button onclick="autoCalibrate('silent')" class="btn-blue">Auto</button>
+    <button onclick="autoCalibrate()" class="btn-blue">Auto</button>
   </div>
   <div id="calibResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
-  <details style="margin-top:12px; font-size:12px; color:#aaa;">
-    <summary style="cursor:pointer; color:#ccc;">Prefer a test tone + microphone instead?</summary>
-    <div style="margin-top:10px; line-height:1.5;">
-      Put the microphone (built-in laptop mic, or any USB/headset mic) somewhere it
-      can clearly hear <strong>both</strong> your PC speakers and the Sonos speaker(s)
-      you're syncing to at once &mdash; roughly the midpoint between them, not sitting
-      right next to either one. A headset mic worn while sitting at the PC usually
-      only hears the PC speakers well and will give a bad reading. Works best in a
-      quiet room.
-      <div style="margin-top:8px;">
-        <button onclick="autoCalibrate('acoustic')" class="btn-blue">Calibrate with test tone</button>
-      </div>
-    </div>
-  </details>
 </div>
 
 </div>
@@ -676,6 +671,31 @@ DASHBOARD_HTML = """
       <div id="captureAppList" style="display:flex; flex-direction:column; gap:2px; max-height:180px; overflow-y:auto; margin-top:4px; padding:6px; background:#111; border:1px solid #333; border-radius:6px;"></div>
       <div id="captureSourceResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
     </div>
+    <div class="adv-section">
+      <label style="margin-bottom:2px;">Play a file or an external device instead</label>
+      <details class="info-toggle">
+        <summary>&#9432; What does this do?</summary>
+        <div class="card-desc">Temporarily replaces the audio above with either an uploaded file or a real input device plugged into this PC (a USB audio interface, mixer, turntable, etc.) &mdash; sent through the exact same delayed PC speakers and Sonos speakers as everything else. A file stops on its own when it ends; either one stops with its Stop button, handing things back to Audio source above.</div>
+      </details>
+      <div style="margin-top:6px;">
+        <label style="font-weight:400; font-size:12px; color:#aaa; margin-bottom:4px; display:block;">From a file</label>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <input type="file" id="fileUploadInput" accept="audio/*" style="flex:1; min-width:140px; color:#eee; font-size:12px;">
+          <button onclick="uploadAndPlayFile()" class="btn-blue">Play</button>
+          <button onclick="stopFilePlayback()" class="btn-ghost">Stop</button>
+        </div>
+        <div id="filePlaybackStatus" style="margin-top:6px; font-size:12px; color:#888;"></div>
+      </div>
+      <div style="margin-top:14px; padding-top:10px; border-top:1px solid #2a2a2a;">
+        <label style="font-weight:400; font-size:12px; color:#aaa; margin-bottom:4px; display:block;">From a device</label>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <select id="externalInputDevice" style="flex:1; min-width:140px; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;"></select>
+          <button onclick="startExternalInput()" class="btn-blue">Start</button>
+          <button onclick="stopExternalInput()" class="btn-ghost">Stop</button>
+        </div>
+        <div id="externalInputStatus" style="margin-top:6px; font-size:12px; color:#888;"></div>
+      </div>
+    </div>
     <div id="captureMethodBlock" class="adv-section" style="display:none;">
       <label style="margin-bottom:2px;">Capture method &mdash; how PC2Sonos reads your PC's audio</label>
       <details class="info-toggle">
@@ -708,6 +728,8 @@ DASHBOARD_HTML = """
     </div>
   </div>
 </div>
+
+<div style="text-align:center; color:#555; font-size:11px; margin-top:24px; padding-bottom:8px;">PC2Sonos v{{version}}</div>
 
 <div class="modal-overlay" id="donateModal">
   <div class="modal-box">
@@ -929,12 +951,10 @@ function resetLocalEq(){
   setLocalEq();
 }
 let calibPolling = null;
-async function autoCalibrate(method){
+async function autoCalibrate(){
   const el = document.getElementById('calibResult');
-  el.textContent = method === 'acoustic'
-    ? 'Starting -- you will hear a short test tone...'
-    : 'Starting -- measuring Sonos playback timing (no sound needed)...';
-  await fetch('/api/calibrate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({method})});
+  el.textContent = 'Starting -- measuring Sonos playback timing (no sound needed)...';
+  await fetch('/api/calibrate', {method:'POST'});
   if (calibPolling) clearInterval(calibPolling);
   calibPolling = setInterval(async () => {
     const res = await fetch('/api/calibrate/status');
@@ -955,21 +975,28 @@ async function autoCalibrate(method){
 async function loadDevices(){
   const res = await fetch('/api/devices');
   const data = await res.json();
-  const sel = document.getElementById('renderDevice');
-  sel.innerHTML = '';
+  const list = document.getElementById('renderDeviceList');
+  list.innerHTML = '';
+  const configured = new Set(data.configured);
   data.devices.forEach(d => {
-    const opt = document.createElement('option');
-    opt.value = d.name;
-    opt.textContent = d.name;
-    if (d.name === data.current) opt.selected = true;
-    sel.appendChild(opt);
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex; align-items:center; gap:8px; font-weight:400; font-size:13px; padding:2px 0;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = d.name;
+    cb.checked = configured.has(d.name);
+    cb.onchange = setDevice;
+    row.appendChild(cb);
+    row.appendChild(document.createTextNode(d.name));
+    list.appendChild(row);
   });
-  document.getElementById('statDevice').textContent = data.current || '—';
+  document.getElementById('statDevice').textContent = data.current.join(', ') || '—';
 }
 async function setDevice(){
-  const sel = document.getElementById('renderDevice');
-  document.getElementById('statDevice').textContent = sel.value || '—';
-  await fetch('/api/render_device', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({device: sel.value})});
+  const list = document.getElementById('renderDeviceList');
+  const devices = Array.from(list.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.value);
+  await fetch('/api/render_device', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({devices})});
+  setTimeout(loadDevices, 300);  // pick up the resolved name(s) once the new session(s) open
 }
 async function loadAudioSessions(){
   const res = await fetch('/api/audio_sessions');
@@ -1017,6 +1044,70 @@ async function setCaptureSource(){
   el.textContent = data.ok
     ? (targets.length ? ('Now mixing ' + targets.join(', ') + ' into the Sonos stream.') : 'Now capturing the whole system again.')
     : ('Failed: ' + data.error);
+}
+async function loadExternalInputDevices(){
+  const res = await fetch('/api/external_input_devices');
+  const data = await res.json();
+  const sel = document.getElementById('externalInputDevice');
+  const previous = sel.value;
+  sel.innerHTML = '';
+  data.devices.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d.name;
+    opt.textContent = d.name;
+    sel.appendChild(opt);
+  });
+  if (previous) sel.value = previous;
+}
+async function uploadAndPlayFile(){
+  const input = document.getElementById('fileUploadInput');
+  const el = document.getElementById('filePlaybackStatus');
+  if (!input.files.length) { el.textContent = 'Choose a file first.'; return; }
+  el.textContent = 'Uploading...';
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  const upRes = await fetch('/api/upload_file', {method:'POST', body: fd});
+  const upData = await upRes.json();
+  if (!upData.ok) { el.textContent = 'Upload failed: ' + upData.error; return; }
+  el.textContent = 'Starting playback...';
+  const playRes = await fetch('/api/play_file', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({filename: upData.filename})});
+  const playData = await playRes.json();
+  if (!playData.ok) el.textContent = 'Failed: ' + playData.error;
+}
+async function stopFilePlayback(){
+  await fetch('/api/stop_file', {method:'POST'});
+}
+async function startExternalInput(){
+  const sel = document.getElementById('externalInputDevice');
+  const el = document.getElementById('externalInputStatus');
+  if (!sel.value) { el.textContent = 'No real input device found.'; return; }
+  const res = await fetch('/api/external_input', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({device: sel.value})});
+  const data = await res.json();
+  if (!data.ok) el.textContent = 'Failed: ' + data.error;
+}
+async function stopExternalInput(){
+  await fetch('/api/external_input/stop', {method:'POST'});
+}
+function _fmtPlaybackTime(s){
+  s = Math.max(0, Math.round(s || 0));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+async function pollAltSourceStatus(){
+  try {
+    const res = await fetch('/api/alt_source_status');
+    const data = await res.json();
+    const fEl = document.getElementById('filePlaybackStatus');
+    if (data.file.playing) {
+      fEl.textContent = 'Playing: ' + data.file.filename + ' (' +
+        _fmtPlaybackTime(data.file.position_s) + ' / ' + _fmtPlaybackTime(data.file.duration_s) + ')';
+    } else if (fEl.textContent.startsWith('Playing:') || fEl.textContent === 'Starting playback...') {
+      fEl.textContent = 'Stopped.';
+    }
+    document.getElementById('externalInputStatus').textContent =
+      data.external.active ? ('Capturing: ' + data.external.device) : '';
+  } catch (e) {}
 }
 let _captureMethodBusy = false;
 function showCaptureMethodStatus(d){
@@ -1154,7 +1245,7 @@ async function checkPlatform(){
       // real and needs an explanation, not silence, or it just looks
       // like the app is spying (see webapp.api_platform_status)
       banner.classList.add('banner-info');
-      text.textContent = `macOS may show a Microphone indicator the whole time PC2Sonos runs -- that's expected, not a bug: reading from BlackHole (the virtual audio device this app streams your system audio through) counts as "Microphone" access to macOS, even though BlackHole only ever carries your Mac's own audio, never your room or your voice. Your real microphone is only ever touched if you press "Calibrate with test tone" on the dashboard, which is optional, and listens for about 6 seconds.`;
+      text.textContent = `macOS may show a Microphone indicator the whole time PC2Sonos runs -- that's expected, not a bug: reading from BlackHole (the virtual audio device this app streams your system audio through) counts as "Microphone" access to macOS, even though BlackHole only ever carries your Mac's own audio, never your room or your voice. Your real microphone is never touched -- not even by auto-calibration, which measures Sonos's own playback clock instead of listening to the room.`;
       btn.style.display = 'none';
       banner.style.display = 'block';
     }
@@ -1364,6 +1455,9 @@ async function loadNowPlaying(){
 refresh();
 loadDevices();
 loadAudioSessions();
+loadExternalInputDevices();
+pollAltSourceStatus();
+setInterval(pollAltSourceStatus, 1000);
 loadCaptureMethod();
 setInterval(loadCaptureMethod, 5000);
 loadSeedIps();
@@ -1395,7 +1489,8 @@ def dashboard():
         local_gain_percent=round(max(1.0, config.get("local_render_gain", 1.0)) * 100),
         eq_bass_db=round(config.get("local_eq_bass_db", 0.0)),
         eq_mid_db=round(config.get("local_eq_mid_db", 0.0)),
-        eq_treble_db=round(config.get("local_eq_treble_db", 0.0)))
+        eq_treble_db=round(config.get("local_eq_treble_db", 0.0)),
+        version=VERSION)
 
 
 def _should_prompt_donation():
@@ -1679,7 +1774,8 @@ def api_devices():
     devices = [d for d in list_output_devices() if not d.get("likely_virtual")]
     return jsonify({
         "devices": devices,
-        "current": get_current_render_device_name(),
+        "current": get_current_render_device_names(),
+        "configured": config.get("render_devices", []),
     })
 
 
@@ -1755,8 +1851,8 @@ def api_update_status():
 @app.route("/api/render_device", methods=["POST"])
 def api_set_render_device():
     data = request.get_json(force=True)
-    device_name = data.get("device", "")
-    restart_render(new_device_substr=device_name)
+    devices = data.get("devices", [])
+    restart_render(new_devices=devices)
     return jsonify({"ok": True})
 
 
@@ -1796,12 +1892,66 @@ def api_set_capture_source():
     return jsonify({"ok": True})
 
 
+@app.route("/api/upload_file", methods=["POST"])
+def api_upload_file():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "no file provided"}), 400
+    name = secure_filename(f.filename)
+    if not name:
+        return jsonify({"ok": False, "error": "invalid filename"}), 400
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    f.save(UPLOAD_DIR / name)
+    return jsonify({"ok": True, "filename": name})
+
+
+@app.route("/api/play_file", methods=["POST"])
+def api_play_file():
+    data = request.get_json(force=True)
+    name = secure_filename(data.get("filename", ""))
+    path = UPLOAD_DIR / name
+    if not name or not path.exists():
+        return jsonify({"ok": False, "error": "file not found -- upload it first"}), 404
+    file_playback.start(path)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/stop_file", methods=["POST"])
+def api_stop_file():
+    file_playback.stop()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/external_input_devices")
+def api_external_input_devices():
+    return jsonify({"devices": list_input_devices()})
+
+
+@app.route("/api/external_input", methods=["POST"])
+def api_start_external_input():
+    data = request.get_json(force=True)
+    device = (data.get("device") or "").strip()
+    if not device:
+        return jsonify({"ok": False, "error": "device required"}), 400
+    start_external_input(device)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/external_input/stop", methods=["POST"])
+def api_stop_external_input():
+    stop_external_input()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/alt_source_status")
+def api_alt_source_status():
+    return jsonify({"file": file_playback.get_status(), "external": get_external_input_status()})
+
+
 @app.route("/api/calibrate", methods=["POST"])
 def api_calibrate():
     from calibration import start_calibration_async
-    data = request.get_json(silent=True) or {}
-    method = "acoustic" if data.get("method") == "acoustic" else "silent"
-    start_calibration_async(method)
+    start_calibration_async()
     return jsonify({"ok": True})
 
 

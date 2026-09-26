@@ -5,6 +5,7 @@ pystray
 pillow
 pyinstaller
 numpy
+soundfile
 # Windows audio stack (WASAPI loopback via pyaudiowpatch; pycaw/comtypes for
 # windows_audio.py). Not installable on macOS, hence the markers.
 pyaudiowpatch; sys_platform == "win32"

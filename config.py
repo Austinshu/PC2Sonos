@@ -106,8 +106,13 @@ DEFAULT_CONFIG = {
     # macOS has no loopback equivalent -- BlackHole is read as an input --
     # so this is ignored there.
     "capture_method": "loopback" if sys.platform == "win32" else "recording",
-    # Blank = auto-pick the first real (non-virtual) WASAPI output device.
-    "render_device_substr": "",
+    # Which local output device(s) get the delayed PC-speaker feed, as a
+    # list of device names/substrings. Empty (the default) = auto-pick the
+    # first real (non-virtual) WASAPI output device, same as always. More
+    # than one entry plays the same delayed audio out of every one of them
+    # at once, each independently opened and buffered -- see
+    # audio_engine.restart_render.
+    "render_devices": [],
     # "system" (default): capture whatever's playing through the virtual
     # cable, i.e. everything. "apps": capture and mix together only the
     # apps named in capture_target_names (see per_app_audio.py), by exe
@@ -231,6 +236,16 @@ def _migrate_local_volume(loaded, merged):
         merged["local_render_gain"] = 1.0
 
 
+def _migrate_render_device(loaded, merged):
+    """Older builds picked exactly one local output via render_device_substr
+    (blank = auto-pick). render_devices (a list) replaces it -- carry a
+    non-blank choice forward as a one-item list; blank stays auto-pick
+    (an empty list) exactly as before."""
+    old_substr = merged.pop("render_device_substr", None)
+    if "render_devices" not in loaded and old_substr:
+        merged["render_devices"] = [old_substr]
+
+
 def load_config():
     if CONFIG_PATH.exists():
         try:
@@ -239,6 +254,7 @@ def load_config():
             merged = {**DEFAULT_CONFIG, **cfg}
             _migrate_single_app_capture(merged)
             _migrate_local_volume(cfg, merged)
+            _migrate_render_device(cfg, merged)
             return merged
         except Exception:
             pass

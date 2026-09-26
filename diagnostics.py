@@ -156,7 +156,7 @@ def system_snapshot():
     contains no personal data beyond LAN-local info (Sonos speaker
     names the user gave them, and the PC's own LAN IP) -- no usernames,
     no file paths outside this app, nothing from other applications."""
-    from audio_engine import get_lan_ip, list_output_devices, get_current_render_device_name
+    from audio_engine import get_lan_ip, list_output_devices, get_current_render_device_names
 
     lines = []
     lines.append(f"generated: {datetime.now().isoformat(timespec='seconds')}")
@@ -172,8 +172,8 @@ def system_snapshot():
         cable, default_out = _cable_and_default_output()
         lines.append(f"VB-CABLE driver: {cable}")
         lines.append(f"Windows default playback device: {default_out}")
-    lines.append(f"PC-speaker (delayed) render device in use: "
-                 f"{get_current_render_device_name() or 'none picked yet'}")
+    lines.append(f"PC-speaker (delayed) render device(s) in use: "
+                 f"{', '.join(get_current_render_device_names()) or 'none picked yet'}")
     try:
         from audio_engine import get_capture_status
         cap = get_capture_status()

@@ -190,6 +190,29 @@ def list_output_devices():
     return out
 
 
+def list_input_devices():
+    """All real (non-virtual, non-loopback) input-capable devices -- the
+    external-input device picker's list. A USB audio interface, mixer, or
+    capture card shows up here the same way a real speaker shows up in
+    list_output_devices()."""
+    try:
+        wasapi_info = _pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+    except Exception:
+        wasapi_info = None
+    out = []
+    for i in range(_pa.get_device_count()):
+        info = _pa.get_device_info_by_index(i)
+        if wasapi_info and info.get("hostApi") != wasapi_info["index"]:
+            continue
+        if info.get("maxInputChannels", 0) <= 0 or info.get("isLoopbackDevice"):
+            continue
+        name = info.get("name", "")
+        if _looks_virtual(name):
+            continue
+        out.append({"index": i, "name": name})
+    return out
+
+
 def auto_pick_render_device():
     """First real (non-virtual) WASAPI output device -- i.e. your
     physical speakers/headphones, not the CABLE virtual device or other
@@ -209,14 +232,6 @@ def auto_pick_render_device():
             continue
         return i, info
     return None, None
-
-
-def get_pyaudio():
-    """The shared PyAudio instance, for modules (like calibration.py) that
-    need to open their own extra stream -- a microphone, in that case --
-    without each opening a second, separate PyAudio host and risking two
-    different views of the device list."""
-    return _pa
 
 
 def _source_ip_for(target):
@@ -872,15 +887,18 @@ def _capture_loop_system(stop_event):
             time.sleep(0.5)
 
 
-current_render_device_name = None  # not persisted -- see get_current_render_device_name()
+_current_render_device_names = {}  # device_substr -> resolved name, not persisted
+_render_names_lock = threading.Lock()  # guards the dict above -- one per-device render thread each read/write it
 
 
-def get_current_render_device_name():
-    """What's actually in use right now, whether auto-picked or explicitly
-    chosen -- distinct from config['render_device_substr'], which stays
-    blank unless the user picked a device by hand (so a bad auto-pick, like
-    grabbing a virtual device, never silently becomes 'sticky')."""
-    return current_render_device_name
+def get_current_render_device_names():
+    """Names of whichever local device(s) are actually playing right now,
+    whether auto-picked or explicitly chosen -- distinct from
+    config['render_devices'], which stays empty unless the user picked
+    devices by hand (so a bad auto-pick, like grabbing a virtual device,
+    never silently becomes 'sticky')."""
+    with _render_names_lock:
+        return list(_current_render_device_names.values())
 
 
 class _NoRenderDevice(Exception):
@@ -1205,10 +1223,14 @@ class _StandingBacklogGuard:
         return low - 1 if low >= self.min_backlog else 0
 
 
-def render_loop(stop_event):
-    """Plays the SAME audio back out to your real speakers, held behind
-    by config['local_delay_ms'] milliseconds, so it lines up with the
-    (slower) Sonos playback instead of echoing ahead of it.
+def render_loop(stop_event, device_substr):
+    """Plays the SAME audio back out to one real local speaker (device_substr,
+    or '' to auto-pick), held behind by config['local_delay_ms'] milliseconds,
+    so it lines up with the (slower) Sonos playback instead of echoing ahead
+    of it. One of these runs per entry in config['render_devices'] (see
+    restart_render) -- entirely independent of any others, so one device
+    failing or being unplugged never affects another still playing, or the
+    Sonos streams.
 
     Opening/writing to the real-speaker WASAPI stream can fail at any
     point -- e.g. "Invalid sample rate" right at app startup if the device
@@ -1216,33 +1238,32 @@ def render_loop(stop_event):
     later if the device sleeps/disconnects. Previously any such exception
     just killed this thread for the rest of the run, so local delayed
     playback silently stayed off unless the user happened to nudge the
-    delay slider or device dropdown (which calls restart_render() and got a
+    delay slider or device picker (which calls restart_render() and got a
     fresh, usually-successful attempt). Retry here instead, the same
     self-healing pattern used elsewhere in the app (Sonos discovery, the
     stream watchdog)."""
-    global current_render_device_name
     _register_audio_thread()
     attempt = 0
     while not stop_event.is_set():
         try:
-            _render_session(stop_event)
+            _render_session(stop_event, device_substr)
             return  # clean stop_event exit
         except _NoRenderDevice:
-            current_render_device_name = None
+            with _render_names_lock:
+                _current_render_device_names.pop(device_substr, None)
             return
         except Exception as e:
             attempt += 1
             wait = min(2 * attempt, 10)
-            current_render_device_name = None
+            with _render_names_lock:
+                _current_render_device_names.pop(device_substr, None)
             print(f"[audio] render loop error ({e}); retrying in {wait}s (attempt {attempt})")
             time.sleep(wait)
 
 
-def _render_session(stop_event):
-    global current_render_device_name
-    render_substr = config.get("render_device_substr") or ""
-    if render_substr:
-        idx, info = find_device_index(render_substr, want_input=False)
+def _render_session(stop_event, device_substr):
+    if device_substr:
+        idx, info = find_device_index(device_substr, want_input=False)
     else:
         idx, info = auto_pick_render_device()
 
@@ -1268,7 +1289,8 @@ def _render_session(stop_event):
 
     stream = _pa.open(format=pyaudio.paInt16, channels=render_channels, rate=render_rate,
                        output=True, output_device_index=idx, frames_per_buffer=CHUNK)
-    current_render_device_name = info["name"]
+    with _render_names_lock:
+        _current_render_device_names[device_substr] = info["name"]
     try:
         host_api_name = _pa.get_host_api_info_by_index(info["hostApi"])["name"]
     except Exception:
@@ -1362,8 +1384,7 @@ def _render_session(stop_event):
         stream.close()
 
 
-_render_stop_event = None
-_render_thread = None
+_render_sessions = {}  # device_substr -> (stop_event, thread)
 _render_lock = threading.Lock()
 
 _capture_stop_event = None
@@ -1371,8 +1392,35 @@ _capture_thread = None
 _capture_lock = threading.Lock()
 
 
+def _active_device_substrs():
+    """config['render_devices'], or [''] (auto-pick, exactly today's
+    single-device default) when the user hasn't picked anything explicit.
+    De-duplicated (order-preserving) -- two identical entries would both
+    try to occupy the same _render_sessions key, and the second start
+    would silently orphan the first thread instead of ever stopping it."""
+    devices = config.get("render_devices") or []
+    return list(dict.fromkeys(devices)) if devices else [""]
+
+
+def _start_render_session(device_substr):
+    stop_event = threading.Event()
+    thread = threading.Thread(target=render_loop, args=(stop_event, device_substr), daemon=True)
+    _render_sessions[device_substr] = (stop_event, thread)
+    thread.start()
+
+
+def _stop_all_render_sessions():
+    for stop_event, _ in _render_sessions.values():
+        stop_event.set()
+    for _, thread in _render_sessions.values():
+        thread.join(timeout=3)
+    _render_sessions.clear()
+    with _render_names_lock:
+        _current_render_device_names.clear()
+
+
 def start_audio_engine(stop_event):
-    global _render_stop_event, _render_thread, _capture_stop_event, _capture_thread
+    global _capture_stop_event, _capture_thread
     _harden_audio_scheduling()
     with _capture_lock:
         _capture_stop_event = threading.Event()
@@ -1380,9 +1428,8 @@ def start_audio_engine(stop_event):
         _capture_thread.start()
 
     with _render_lock:
-        _render_stop_event = threading.Event()
-        _render_thread = threading.Thread(target=render_loop, args=(_render_stop_event,), daemon=True)
-        _render_thread.start()
+        for substr in _active_device_substrs():
+            _start_render_session(substr)
 
 
 def restart_capture(new_mode=None, new_target_names=None, new_method=None):
@@ -1398,7 +1445,19 @@ def restart_capture(new_mode=None, new_target_names=None, new_method=None):
     new format is actually known, once the new stream is open (see
     _publish_capture_format): it restarts the local render path and the
     Sonos streams only if the format really changed, so a switch between
-    two sources with the same format doesn't interrupt anything."""
+    two sources with the same format doesn't interrupt anything.
+
+    Also the one place that hands the capture slot back from file playback
+    or external-input capture to live audio, since this is the single
+    function every "go back to live" path (their own end-of-source hand-
+    back, and this function being called directly for an unrelated reason
+    like switching Audio source or Capture method while one of them
+    happens to be active) ultimately funnels through -- without this, live
+    capture had no way to know it needed to evict them first, and a second
+    capture thread would start up alongside whichever alternate source was
+    still running."""
+    import file_playback
+
     global _capture_stop_event, _capture_thread
     from config import save_config
     if new_mode is not None:
@@ -1409,30 +1468,161 @@ def restart_capture(new_mode=None, new_target_names=None, new_method=None):
         config["capture_method"] = new_method
     if new_mode is not None or new_target_names is not None or new_method is not None:
         save_config(config)
-    with _capture_lock:
-        if _capture_stop_event is not None:
-            _capture_stop_event.set()
-        if _capture_thread is not None:
-            _capture_thread.join(timeout=3)
-        _capture_stop_event = threading.Event()
-        _capture_thread = threading.Thread(target=capture_loop, args=(_capture_stop_event,), daemon=True)
-        _capture_thread.start()
+    with _source_lock:
+        file_playback.stop(resume_capture=False)
+        stop_external_input(resume_capture=False)
+        with _capture_lock:
+            if _capture_stop_event is not None:
+                _capture_stop_event.set()
+            if _capture_thread is not None:
+                _capture_thread.join(timeout=3)
+            _capture_stop_event = threading.Event()
+            _capture_thread = threading.Thread(target=capture_loop, args=(_capture_stop_event,), daemon=True)
+            _capture_thread.start()
 
 
-def restart_render(new_device_substr=None):
-    """Stop the current delayed-local-playback thread and start a new one,
-    picking up either a newly-chosen render device or a changed delay.
-    Used when the dashboard's device dropdown or delay slider changes."""
-    global _render_stop_event, _render_thread
+_external_status = {"active": False, "device": ""}
+_external_stop_event = None
+_external_thread = None
+_external_lock = threading.Lock()
+
+# Serializes every transition between the three things that can own the
+# capture slot -- live capture, file playback, and this external-input
+# capture -- so "evict whichever of the others is active, then take over"
+# can never interleave across two of them at once (e.g. Play-file and
+# Start-external-input arriving as two near-simultaneous dashboard clicks).
+_source_lock = threading.Lock()
+
+
+def _external_input_loop(device_substr, stop_event):
+    """Reads a real external input device (e.g. a USB audio interface, a
+    mixer, a turntable's USB output) exactly like _read_loop_recording
+    already reads the virtual cable's recording side -- that loop doesn't
+    care what device it's handed, so it's reused as-is here.
+
+    Every exit -- the device not being found, failing to open, a read
+    error, or an explicit stop_event.set() -- funnels through the same
+    tail below, so "was this an unrequested exit?" is decided in exactly
+    one place instead of once per early-return."""
+    stream = None
+    try:
+        idx, info = find_device_index(device_substr, want_input=True)
+        if idx is None:
+            raise RuntimeError(f"external input device matching '{device_substr}' not found")
+        rate = int(info.get("defaultSampleRate", config["sample_rate"]))
+        channels = min(int(info.get("maxInputChannels", 2)), 2)
+        stream = _pa.open(format=pyaudio.paInt16, channels=channels, rate=rate,
+                           input=True, input_device_index=idx, frames_per_buffer=CHUNK)
+        print(f"[audio] capturing external input from: {info['name']} @ {rate}Hz x{channels}ch")
+        _publish_capture_format(rate, channels)
+        _set_capture_status("external", info["name"], rate, channels)
+        with _external_lock:
+            _external_status.update(active=True, device=info["name"])
+        _read_loop_recording(stream, stop_event)
+    except Exception as e:
+        print(f"[audio] external input capture failed: {e}")
+    finally:
+        if stream is not None:
+            stream.stop_stream()
+            stream.close()
+        _set_capture_status()
+        with _external_lock:
+            _external_status.update(active=False, device="")
+    if not stop_event.is_set():
+        # Ended on its own -- not found, wouldn't open, or dropped out with
+        # read errors -- rather than being told to stop. Hand capture back
+        # to the live source automatically instead of leaving Sonos and the
+        # local speakers silent.
+        restart_capture()
+
+
+def _stop_external_input_locked():
+    """Body of stop_external_input(), for callers that already hold
+    _external_lock (start_external_input(), to cleanly replace anything
+    already capturing before taking over). Safe to call whether or not a
+    thread is actually still running -- joining an already-finished thread
+    returns immediately."""
+    global _external_stop_event, _external_thread
+    if _external_stop_event is not None:
+        _external_stop_event.set()
+    if _external_thread is not None:
+        _external_thread.join(timeout=3)
+    _external_stop_event = None
+    _external_thread = None
+
+
+def start_external_input(device_substr):
+    """Stops live capture (and any file playback) and captures from
+    device_substr instead -- a real input device such as a USB audio
+    interface, mixer, or turntable -- through the same broadcaster ->
+    Sonos streams -> delayed local speakers pipeline everything else uses.
+    Call stop_external_input() to hand capture back to the live source."""
+    import file_playback
+
+    global _external_stop_event, _external_thread
+    with _source_lock:
+        file_playback.stop(resume_capture=False)
+        with _external_lock:
+            _stop_external_input_locked()
+            with _capture_lock:
+                if _capture_stop_event is not None:
+                    _capture_stop_event.set()
+                if _capture_thread is not None:
+                    _capture_thread.join(timeout=3)
+            _external_stop_event = threading.Event()
+            _external_thread = threading.Thread(
+                target=_external_input_loop, args=(device_substr, _external_stop_event), daemon=True)
+            _external_thread.start()
+
+
+def stop_external_input(resume_capture=True):
+    """Stops external-input capture (no-op if nothing's actually still
+    capturing -- checked with is_alive(), not just "is there a thread
+    object", since a device that already dropped out on its own leaves a
+    finished-but-not-yet-cleared thread behind) and hands capture back to
+    the normal live system/app source. resume_capture=False is for callers
+    (restart_capture itself) that are about to start live capture anyway,
+    so a redundant resume here would just be immediately undone.
+
+    Also safe to call from _external_input_loop's OWN thread (restart_capture(),
+    at the natural-end tail there, calls this with resume_capture=False) --
+    a thread can't join itself, so that case just clears the bookkeeping
+    instead of trying to."""
+    global _external_stop_event, _external_thread
+    current = threading.current_thread()
+    with _external_lock:
+        thread = _external_thread
+        if thread is current:
+            was_active = False
+            _external_stop_event = None
+            _external_thread = None
+        else:
+            was_active = thread is not None and thread.is_alive()
+            _stop_external_input_locked()
+    if was_active and resume_capture:
+        restart_capture()
+
+
+def get_external_input_status():
+    with _external_lock:
+        return dict(_external_status)
+
+
+def restart_render(new_devices=None):
+    """Stop every current delayed-local-playback thread and start fresh ones
+    for config['render_devices'] (or a single auto-picked one if that's
+    empty). Used when the dashboard's device picker changes.
+
+    Always a full stop-then-start of every device rather than diffing old
+    vs. new lists: this only runs on an explicit user action (checking or
+    unchecking a device), never in the playback hot path, so the simplicity
+    is worth the moment of silence while it reopens even the devices that
+    didn't change."""
     from config import save_config
-    if new_device_substr is not None:
-        config["render_device_substr"] = new_device_substr
+    if new_devices is not None:
+        config["render_devices"] = new_devices
         save_config(config)
     with _render_lock:
-        if _render_stop_event is not None:
-            _render_stop_event.set()
-        if _render_thread is not None:
-            _render_thread.join(timeout=3)
-        _render_stop_event = threading.Event()
-        _render_thread = threading.Thread(target=render_loop, args=(_render_stop_event,), daemon=True)
-        _render_thread.start()
+        _stop_all_render_sessions()
+        for substr in _active_device_substrs():
+            _start_render_session(substr)
