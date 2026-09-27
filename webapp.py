@@ -512,6 +512,7 @@ DASHBOARD_HTML = """
              style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
       <span>%</span>
     </div>
+    <div id="speakerWinVolWarn" style="display:none; margin-top:8px; font-size:12px; color:#e0b050;"></div>
   </div>
 </div>
 
@@ -992,6 +993,32 @@ async function loadDevices(){
   });
   document.getElementById('statDevice').textContent = data.current.join(', ') || '—';
 }
+async function loadSpeakerWindowsVolume(){
+  // A speaker's own Windows volume can't be reached with the volume keys
+  // while PC2Sonos runs (they move the virtual cable), so point it out
+  // when it's been left low -- that's the usual cause of "too quiet".
+  const warn = document.getElementById('speakerWinVolWarn');
+  let data;
+  try { data = await (await fetch('/api/speaker_windows_volume')).json(); } catch (e) { return; }
+  const low = (data.speakers || []).filter(s => s.low);
+  warn.innerHTML = '';
+  warn.style.display = low.length ? 'block' : 'none';
+  low.forEach(s => {
+    const line = document.createElement('div');
+    line.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;';
+    line.appendChild(document.createTextNode(
+      `Windows has ${s.name} at ${s.muted ? 'mute' : s.percent + '%'}, so it will sound quiet even at 100% here. `));
+    const btn = document.createElement('button');
+    btn.textContent = 'Set it to 100%';
+    btn.onclick = async () => {
+      btn.disabled = true;
+      await fetch('/api/speaker_windows_volume', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: s.name})});
+      loadSpeakerWindowsVolume();
+    };
+    line.appendChild(btn);
+    warn.appendChild(line);
+  });
+}
 async function setDevice(){
   const list = document.getElementById('renderDeviceList');
   const devices = Array.from(list.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.value);
@@ -1469,6 +1496,8 @@ checkDonatePrompt();
 checkUpdate();
 checkPlatform();
 setInterval(checkPlatform, 5000);
+loadSpeakerWindowsVolume();
+setInterval(loadSpeakerWindowsVolume, 5000);
 syncLocalVolume('slider');
 syncLocalGain('slider');  // shows the warning immediately if the saved boost is already past 100%
 setLocalEq();  // shows the warning immediately if a saved EQ band is already past +/-6dB
@@ -1777,6 +1806,36 @@ def api_devices():
         "current": get_current_render_device_names(),
         "configured": config.get("render_devices", []),
     })
+
+
+@app.route("/api/speaker_windows_volume", methods=["GET", "POST"])
+def api_speaker_windows_volume():
+    """The Windows volume of each local speaker PC2Sonos is playing to,
+    flagged `low` when it's muted or well down -- Windows' volume keys move
+    the virtual cable while PC2Sonos runs, so a speaker left low stays low
+    and the delayed audio sounds far quieter than normal (see
+    windows_audio.get_endpoint_volume). POST {name} sets that speaker to
+    100% and unmutes it; only a speaker currently in use can be named.
+    Windows only: elsewhere `speakers` is always empty."""
+    if sys.platform != "win32":
+        return jsonify({"ok": True, "speakers": []})
+    import windows_audio
+    current = get_current_render_device_names()
+    if request.method == "POST":
+        name = (request.get_json(force=True) or {}).get("name")
+        if name not in current:
+            return jsonify({"ok": False, "error": "not a speaker PC2Sonos is playing to"}), 400
+        ok, detail = windows_audio.set_endpoint_volume_full(name)
+        print(f"[audio] set {name}'s Windows volume to 100%: {'ok' if ok else detail}")
+        if not ok:
+            return jsonify({"ok": False, "error": detail}), 500
+    speakers = []
+    for name in current:
+        vol = windows_audio.get_endpoint_volume(name)
+        if vol is not None:
+            speakers.append({"name": name, **vol,
+                             "low": windows_audio.is_low_endpoint_volume(vol["percent"], vol["muted"])})
+    return jsonify({"ok": True, "speakers": speakers})
 
 
 @app.route("/api/platform_status")

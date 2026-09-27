@@ -384,6 +384,41 @@ assert audio_engine.get_current_render_device_names() == ["Speakers (Realtek(R) 
 audio_engine._stop_all_render_sessions()  # clean up the thread this test started
 print("  /api/render_device OK (explicit device switch works)")
 
+# A speaker's own Windows volume left low (6% on a real PC) made the PC
+# speakers far quieter than normal with PC2Sonos at 100% -- the volume keys
+# move the cable, so nothing on screen pointed at it. The dashboard flags it.
+import windows_audio
+eps = [("id-rt", "Speakers (Realtek(R) Audio)"), ("id-cable", "CABLE Input (VB-Audio Virtual Cable)"),
+       ("id-hp1", "Headphones (2- Arctis Nova Pro Wireless)"),
+       ("id-hp2", "Headphones (2- Arctis Nova Pro Wireless) Chat")]
+assert windows_audio.match_render_endpoint("speakers (realtek(r) audio)", eps) == "id-rt"
+assert windows_audio.match_render_endpoint("Speakers (Realtek(R) Audi", eps) == "id-rt"  # MME's 31-char cut
+assert windows_audio.match_render_endpoint("Headphones (2- Arctis Nova Pro", eps) is None  # ambiguous prefix
+assert windows_audio.match_render_endpoint("", eps) is None
+assert windows_audio.is_low_endpoint_volume(6, False)
+assert windows_audio.is_low_endpoint_volume(100, True)
+assert not windows_audio.is_low_endpoint_volume(80, False)
+
+_fake_vols = {"Speakers (Realtek(R) Audio)": {"percent": 6, "muted": False}}
+_real_get_vol, _real_set_vol = windows_audio.get_endpoint_volume, windows_audio.set_endpoint_volume_full
+_real_current, _real_platform = webapp.get_current_render_device_names, sys.platform
+windows_audio.get_endpoint_volume = lambda name: _fake_vols.get(name)
+windows_audio.set_endpoint_volume_full = lambda name: (_fake_vols.__setitem__(name, {"percent": 100, "muted": False}), (True, name))[1]
+webapp.get_current_render_device_names = lambda: ["Speakers (Realtek(R) Audio)"]
+sys.platform = "win32"
+try:
+    body = client.get("/api/speaker_windows_volume").get_json()
+    assert body["speakers"] == [{"name": "Speakers (Realtek(R) Audio)", "percent": 6,
+                                 "muted": False, "low": True}], body
+    r = client.post("/api/speaker_windows_volume", json={"name": "CABLE Input (VB-Audio Virtual Cable)"})
+    assert r.status_code == 400, "only a speaker PC2Sonos is playing to can be changed"
+    body = client.post("/api/speaker_windows_volume", json={"name": "Speakers (Realtek(R) Audio)"}).get_json()
+    assert body["speakers"][0]["percent"] == 100 and not body["speakers"][0]["low"], body
+finally:
+    windows_audio.get_endpoint_volume, windows_audio.set_endpoint_volume_full = _real_get_vol, _real_set_vol
+    webapp.get_current_render_device_names, sys.platform = _real_current, _real_platform
+print("  /api/speaker_windows_volume OK (a speaker left low in Windows is flagged and fixable)")
+
 r = client.post("/api/local_gain", json={"percent": 150})
 assert r.status_code == 200 and webapp.config["local_render_gain"] == 1.5
 r = client.post("/api/local_gain", json={"percent": 999})  # clamps, doesn't error

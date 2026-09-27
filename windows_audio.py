@@ -125,3 +125,78 @@ def ensure_cable_is_default():
         return f"could not switch default output: {detail}"
     except Exception as e:
         return f"default-output check failed: {type(e).__name__}: {e}"
+
+
+# The Windows volume of a real speaker PC2Sonos plays to. Windows' volume
+# keys and taskbar slider only ever move the DEFAULT device, which is the
+# virtual cable while PC2Sonos runs, so a speaker's own volume is stranded at
+# whatever it was last set to -- and one left low (6% was found on a real PC)
+# makes the delayed PC-speaker audio far quieter than the same speakers
+# played directly, even with PC2Sonos's own volume at 100% and no boost.
+# The dashboard reads these to point that out and offer to fix it.
+
+LOW_ENDPOINT_VOLUME_PERCENT = 50
+
+
+def match_render_endpoint(name, endpoints):
+    """The endpoint id in `endpoints` ([(id, friendly_name)]) for the
+    PortAudio device `name`, or None. WASAPI names are the full friendly
+    name; MME truncates them to 31 characters, so a name that is a prefix
+    of exactly one endpoint's also counts."""
+    want = (name or "").strip().lower()
+    if not want:
+        return None
+    for eid, friendly in endpoints:
+        if (friendly or "").lower() == want:
+            return eid
+    prefixed = [eid for eid, friendly in endpoints if (friendly or "").lower().startswith(want)]
+    return prefixed[0] if len(prefixed) == 1 else None
+
+
+def is_low_endpoint_volume(percent, muted):
+    return bool(muted) or percent < LOW_ENDPOINT_VOLUME_PERCENT
+
+
+def _render_endpoint_volume(name):
+    """IAudioEndpointVolume for the active playback device called `name`,
+    or None. The caller must have initialised COM on this thread."""
+    from pycaw.utils import AudioUtilities
+    devices = AudioUtilities.GetAllDevices(data_flow=0, device_state=1)  # eRender, ACTIVE
+    by_id = {d.id: d for d in devices}
+    eid = match_render_endpoint(name, [(d.id, d.FriendlyName) for d in devices])
+    return by_id[eid].EndpointVolume if eid else None
+
+
+def get_endpoint_volume(name):
+    """{"percent": 0-100, "muted": bool} for the playback device `name`,
+    or None if it can't be found or read."""
+    import comtypes
+    comtypes.CoInitialize()  # called from Flask request threads
+    try:
+        vol = _render_endpoint_volume(name)
+        if vol is None:
+            return None
+        return {"percent": round(vol.GetMasterVolumeLevelScalar() * 100),
+                "muted": bool(vol.GetMute())}
+    except Exception:
+        return None
+    finally:
+        comtypes.CoUninitialize()
+
+
+def set_endpoint_volume_full(name):
+    """Sets the playback device `name` to 100% and unmutes it. Returns
+    (ok, detail)."""
+    import comtypes
+    comtypes.CoInitialize()
+    try:
+        vol = _render_endpoint_volume(name)
+        if vol is None:
+            return False, f"no active playback device named '{name}'"
+        vol.SetMasterVolumeLevelScalar(1.0, None)
+        vol.SetMute(0, None)
+        return True, name
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    finally:
+        comtypes.CoUninitialize()
