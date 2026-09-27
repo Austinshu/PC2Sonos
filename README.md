@@ -44,6 +44,37 @@ telemetry, no account, and no license check -- it's a local web dashboard
 (default `http://127.0.0.1:5757`) plus a background audio/streaming
 engine, fully offline apart from that one-time-per-launch update check.
 
+## What's new in v1.5.5
+
+v1.5.5 changes what the PC speaker Volume slider controls on Windows.
+Everything described under v1.5.4 and earlier below is part of this release
+as well.
+
+**The PC speaker Volume is now your speakers' own Windows volume.** Until
+now, the Volume slider on the main page was a separate PC2Sonos volume that
+sat on top of your speakers' Windows volume. That was misleading, because
+the Windows volume can get stuck. While PC2Sonos runs, Windows' volume keys
+and taskbar slider control the virtual cable, not your speakers. If the
+speakers' own Windows volume had been left low, they sounded far quieter
+than normal even with PC2Sonos at 100% and the boost turned all the way up,
+and nothing on the dashboard showed why. On Windows the slider is now the
+very same setting as your speakers' entry in Settings > System > Sound. It
+shows the real value, it follows along if you change it in Windows, and
+moving it unmutes the speakers. With more than one PC speaker ticked, it
+sets all of them. "Scale everything together" turns it down the same way it
+did before. The Boost under Advanced is unchanged and still separate. On
+macOS the slider works as it did before.
+
+**Your current setting carries over without a jump in loudness.** If you
+had the old Volume below 100%, the first launch of v1.5.5 lowers your
+speakers' Windows volume by the same amount and sets PC2Sonos's own volume
+back to 100%, so everything sounds exactly as loud as before. If any of your
+PC speakers can't be adjusted, PC2Sonos leaves everything as it was and
+tries again at the next launch, so no speaker is ever turned down twice.
+
+This replaces the low-volume warning added in v1.5.4, since the slider now
+shows the real value itself.
+
 ## What's new in v1.5.4
 
 v1.5.4 is a small fix release. Everything described under v1.5.3 and
