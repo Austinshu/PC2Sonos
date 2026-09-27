@@ -16,6 +16,28 @@ cross-platform test harness can import this module on Linux.
 """
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _com():
+    """COM initialised for the duration, on whatever thread this is.
+    comtypes only initialises the thread that imports it, so any call from
+    another thread (a Flask request, the startup diagnostics snapshot)
+    otherwise fails with "CoInitialize has not been called". Calls nest.
+    A thread already initialised in another mode is used as it is."""
+    import comtypes
+    try:
+        comtypes.CoInitialize()
+    except OSError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        comtypes.CoUninitialize()
+
+
 def _policy_config():
     import comtypes
     from comtypes import GUID, COMMETHOD, HRESULT
@@ -65,7 +87,9 @@ def list_playback_devices():
     """[(device_id, friendly_name)] for all active render endpoints."""
     from pycaw.utils import AudioUtilities
     out = []
-    for d in AudioUtilities.GetAllDevices():
+    with _com():
+        devices = AudioUtilities.GetAllDevices()
+    for d in devices:
         try:
             # flow: DataFlow.eRender == 0 in pycaw's AudioDeviceState models;
             # GetAllDevices includes capture too, so filter by state+flow via
@@ -81,8 +105,12 @@ def current_default_playback_name():
     """Friendly name of the current default render device, or ''. """
     try:
         from pycaw.utils import AudioUtilities
-        dev = AudioUtilities.GetSpeakers()  # default render endpoint
-        dev_id = dev.GetId()
+        with _com():
+            dev = AudioUtilities.GetSpeakers()  # default render endpoint
+            # newer pycaw wraps it in an AudioDevice (.id); older returns
+            # the raw IMMDevice (.GetId()) -- without this the name always
+            # came back '', so the default was never seen as already OK
+            dev_id = dev.id if hasattr(dev, "id") else dev.GetId()
         for did, name in list_playback_devices():
             if did == dev_id:
                 return name
@@ -103,9 +131,10 @@ def set_default_playback(name_substr="CABLE Input"):
                 break
         if not target_id:
             return False, f"no playback device matching '{name_substr}' found"
-        pc = _policy_config()
-        for role in (0, 1, 2):   # eConsole, eMultimedia, eCommunications
-            pc.SetDefaultEndpoint(target_id, role)
+        with _com():
+            pc = _policy_config()
+            for role in (0, 1, 2):   # eConsole, eMultimedia, eCommunications
+                pc.SetDefaultEndpoint(target_id, role)
         return True, target_name
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
@@ -159,7 +188,7 @@ def is_low_endpoint_volume(percent, muted):
 
 def _render_endpoint_volume(name):
     """IAudioEndpointVolume for the active playback device called `name`,
-    or None. The caller must have initialised COM on this thread."""
+    or None. Call inside _com()."""
     from pycaw.utils import AudioUtilities
     devices = AudioUtilities.GetAllDevices(data_flow=0, device_state=1)  # eRender, ACTIVE
     by_id = {d.id: d for d in devices}
@@ -170,33 +199,27 @@ def _render_endpoint_volume(name):
 def get_endpoint_volume(name):
     """{"percent": 0-100, "muted": bool} for the playback device `name`,
     or None if it can't be found or read."""
-    import comtypes
-    comtypes.CoInitialize()  # called from Flask request threads
     try:
-        vol = _render_endpoint_volume(name)
-        if vol is None:
-            return None
-        return {"percent": round(vol.GetMasterVolumeLevelScalar() * 100),
-                "muted": bool(vol.GetMute())}
+        with _com():
+            vol = _render_endpoint_volume(name)
+            if vol is None:
+                return None
+            return {"percent": round(vol.GetMasterVolumeLevelScalar() * 100),
+                    "muted": bool(vol.GetMute())}
     except Exception:
         return None
-    finally:
-        comtypes.CoUninitialize()
 
 
 def set_endpoint_volume_full(name):
     """Sets the playback device `name` to 100% and unmutes it. Returns
     (ok, detail)."""
-    import comtypes
-    comtypes.CoInitialize()
     try:
-        vol = _render_endpoint_volume(name)
-        if vol is None:
-            return False, f"no active playback device named '{name}'"
-        vol.SetMasterVolumeLevelScalar(1.0, None)
-        vol.SetMute(0, None)
-        return True, name
+        with _com():
+            vol = _render_endpoint_volume(name)
+            if vol is None:
+                return False, f"no active playback device named '{name}'"
+            vol.SetMasterVolumeLevelScalar(1.0, None)
+            vol.SetMute(0, None)
+            return True, name
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
-    finally:
-        comtypes.CoUninitialize()

@@ -419,6 +419,33 @@ finally:
     webapp.get_current_render_device_names, sys.platform = _real_current, _real_platform
 print("  /api/speaker_windows_volume OK (a speaker left low in Windows is flagged and fixable)")
 
+# Newer pycaw's GetSpeakers() returns an AudioDevice (.id, no .GetId()), which
+# made current_default_playback_name() always '' -- the diagnostics said
+# "unknown" and the cable never counted as already the default.
+class _FakeDev:
+    def __init__(self, id_, name):
+        self.id, self.FriendlyName = id_, name
+_fake_utils = types.ModuleType("pycaw.utils")
+_fake_utils.AudioUtilities = types.SimpleNamespace(
+    GetSpeakers=lambda: _FakeDev("id-cable", "CABLE Input (VB-Audio Virtual Cable)"),
+    GetAllDevices=lambda *a, **k: [_FakeDev("id-rt", "Speakers (Realtek(R) Audio)"),
+                                   _FakeDev("id-cable", "CABLE Input (VB-Audio Virtual Cable)")])
+_fake_comtypes = types.ModuleType("comtypes")
+_fake_comtypes.CoInitialize = lambda: None
+_fake_comtypes.CoUninitialize = lambda: None
+_saved_mods = {m: sys.modules.get(m) for m in ("pycaw", "pycaw.utils", "comtypes")}
+sys.modules.update({"pycaw": types.ModuleType("pycaw"), "pycaw.utils": _fake_utils, "comtypes": _fake_comtypes})
+try:
+    assert windows_audio.current_default_playback_name() == "CABLE Input (VB-Audio Virtual Cable)"
+    assert windows_audio.ensure_cable_is_default().startswith("default output already OK")
+finally:
+    for m, mod in _saved_mods.items():
+        if mod is None:
+            sys.modules.pop(m, None)
+        else:
+            sys.modules[m] = mod
+print("  windows_audio: the current default output is read with either pycaw shape OK")
+
 r = client.post("/api/local_gain", json={"percent": 150})
 assert r.status_code == 200 and webapp.config["local_render_gain"] == 1.5
 r = client.post("/api/local_gain", json={"percent": 999})  # clamps, doesn't error
