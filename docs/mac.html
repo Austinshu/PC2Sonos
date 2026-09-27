@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to use Sonos as your Mac's speakers</title>
+<meta name="description" content="Stream your Mac's audio to any Sonos speaker, in sync with your Mac speakers, with the free PC2Sonos app. Works on Apple Silicon and Intel.">
+<link rel="canonical" href="https://austinshu.github.io/PC2Sonos/mac.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PC2Sonos">
+<meta property="og:title" content="How to use Sonos as your Mac's speakers">
+<meta property="og:description" content="Stream your Mac's audio to any Sonos speaker, in sync with your Mac speakers, with the free PC2Sonos app. Works on Apple Silicon and Intel.">
+<meta property="og:url" content="https://austinshu.github.io/PC2Sonos/mac.html">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="index.html">PC2Sonos</a>
+  <nav><a href="index.html">Home</a><a href="download.html">Download</a><a href="windows.html">Windows</a><a href="mac.html" aria-current="page">Mac</a><a href="faq.html">FAQ</a></nav>
+</div></header>
+<main><div class="wrap">
+
+<h1>How to use Sonos as your Mac's speakers</h1>
+<p class="lead">AirPlay works with some Sonos speakers, but it lags and can't keep your Mac's own speakers in sync. PC2Sonos streams everything your Mac plays to any Sonos speaker and delays your Mac speakers to match.</p>
+<div class="buttons">
+  <a class="btn" id="dl" href="download.html">Download free</a>
+  <a class="btn secondary" href="https://github.com/Austinshu/PC2Sonos">View on GitHub</a>
+</div>
+<p class="note" id="dlnote">Windows 10 or newer, macOS 12 or newer. No account needed.</p>
+<script>
+(function () {
+  var ua = navigator.userAgent || "", btn = document.getElementById("dl"), note = document.getElementById("dlnote");
+  if (/Windows/i.test(ua)) {
+    btn.href = "https://github.com/Austinshu/PC2Sonos/releases/latest/download/PC2Sonos-Setup.exe"; btn.textContent = "Download for Windows";
+    note.innerHTML = 'Free for Windows 10 and 11. On a Mac? <a href="download.html">Get the Mac version</a>.';
+  } else if (/Macintosh|Mac OS X/i.test(ua)) {
+    btn.href = "download.html#mac"; btn.textContent = "Download for Mac";
+  }
+})();
+</script>
+
+<h2>How it works on a Mac</h2>
+<p>PC2Sonos uses BlackHole, a free, open-source virtual audio device. While PC2Sonos runs, BlackHole is your Mac's output, so everything you play goes into it. PC2Sonos reads it, streams it to your Sonos speakers, and plays a delayed copy to your Mac's own speakers or headphones. When you quit PC2Sonos from the menu bar, your previous output comes back.</p>
+
+<h2>Why not just use AirPlay?</h2>
+<p>AirPlay only works with AirPlay-capable Sonos models, and your Mac's speakers still play ahead of Sonos. PC2Sonos works with any Sonos speaker on your network and keeps your Mac speakers in step with them.</p>
+
+<h2 id="microphone">Why does it ask for Microphone access?</h2>
+<p>macOS treats reading from any virtual audio device as microphone access, so the microphone indicator stays on while PC2Sonos runs. That's the same for every Mac app that routes system audio, such as Loopback or Audio Hijack. BlackHole only ever carries your Mac's own audio, never your room or your voice.</p>
+
+<h2>Requirements</h2>
+<p>macOS 12 Monterey or newer, on Apple Silicon or Intel. PC2Sonos starts at login from Login Items.</p>
+
+<p><a href="download.html#mac">Download for Mac</a> · <a href="faq.html">FAQ</a></p>
+
+</div></main>
+<footer class="site"><div class="wrap">
+  PC2Sonos is free and open source. <a href="https://github.com/Austinshu/PC2Sonos">Source on GitHub</a> ·
+  <a href="https://github.com/Austinshu/PC2Sonos/releases">Release notes</a> ·
+  <a href="https://buy.stripe.com/eVq7sF9Iv4LjfeM4JScbC01">Support the project</a><br>
+  PC2Sonos is an independent project and isn't affiliated with or endorsed by Sonos, Inc.
+</div></footer>
+</body>
+</html>

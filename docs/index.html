@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PC2Sonos: play your PC or Mac audio on Sonos, in sync</title>
+<meta name="description" content="Free app that streams your Windows PC or Mac audio to Sonos speakers, in sync with your computer speakers so there's no echo. No account needed.">
+<link rel="canonical" href="https://austinshu.github.io/PC2Sonos/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PC2Sonos">
+<meta property="og:title" content="PC2Sonos: play your PC or Mac audio on Sonos, in sync">
+<meta property="og:description" content="Free app that streams your Windows PC or Mac audio to Sonos speakers, in sync with your computer speakers so there's no echo. No account needed.">
+<meta property="og:url" content="https://austinshu.github.io/PC2Sonos/">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="style.css">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "PC2Sonos", "operatingSystem": "Windows 10, Windows 11, macOS 12 or later", "applicationCategory": "MultimediaApplication", "description": "Streams your PC or Mac audio to Sonos speakers, in sync with your computer's own speakers.", "url": "https://austinshu.github.io/PC2Sonos/", "downloadUrl": "https://github.com/Austinshu/PC2Sonos/releases/latest", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}</script>
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="index.html">PC2Sonos</a>
+  <nav><a href="index.html" aria-current="page">Home</a><a href="download.html">Download</a><a href="windows.html">Windows</a><a href="mac.html">Mac</a><a href="faq.html">FAQ</a></nav>
+</div></header>
+<main><div class="wrap">
+
+<h1>Your computer's sound, on your Sonos</h1>
+<p class="lead">PC2Sonos streams everything your Windows PC or Mac plays to your Sonos speakers,
+in sync with your desk speakers, with no echo. It's free, runs on your own computer,
+and starts by itself when you log in.</p>
+<div class="buttons">
+  <a class="btn" id="dl" href="download.html">Download free</a>
+  <a class="btn secondary" href="https://github.com/Austinshu/PC2Sonos">View on GitHub</a>
+</div>
+<p class="note" id="dlnote">Windows 10 or newer, macOS 12 or newer. No account needed.</p>
+<script>
+(function () {
+  var ua = navigator.userAgent || "", btn = document.getElementById("dl"), note = document.getElementById("dlnote");
+  if (/Windows/i.test(ua)) {
+    btn.href = "https://github.com/Austinshu/PC2Sonos/releases/latest/download/PC2Sonos-Setup.exe"; btn.textContent = "Download for Windows";
+    note.innerHTML = 'Free for Windows 10 and 11. On a Mac? <a href="download.html">Get the Mac version</a>.';
+  } else if (/Macintosh|Mac OS X/i.test(ua)) {
+    btn.href = "download.html#mac"; btn.textContent = "Download for Mac";
+  }
+})();
+</script>
+
+<h2>Why your PC speakers and Sonos echo</h2>
+<p>Sonos speakers always play a second or two behind whatever sends them audio. That delay is built
+into Sonos so a group of speakers stays in step, and no app can remove it. So when your computer's
+speakers and a Sonos play the same thing, you hear it twice. PC2Sonos holds your computer's speakers
+back by the same amount, like the lip-sync setting on a TV or AV receiver. Press <strong>Auto</strong> once and it
+measures the delay for you.</p>
+
+<h2>What it does</h2>
+<div class="grid">
+  <div class="card"><h3>Every Sonos, found for you</h3><p>Finds all your speakers automatically, even on a separate network or VLAN. Turn on the ones you want, each with its own volume.</p></div>
+  <div class="card"><h3>No echo</h3><p>Your PC speakers are delayed to match Sonos, and it resyncs in the background so it doesn't drift over a long day.</p></div>
+  <div class="card"><h3>Starts on its own</h3><p>Runs quietly at login, in the system tray or menu bar. Nothing to remember to open.</p></div>
+  <div class="card"><h3>Pick what plays</h3><p>Stream the whole computer, or just the apps you choose (Windows). You can also play a file or a device plugged into your PC.</p></div>
+  <div class="card"><h3>A dashboard that shows what's happening</h3><p>See which speakers are playing, your sync delay and a live level meter, with a sleep timer and one volume slider for everything.</p></div>
+  <div class="card"><h3>Private</h3><p>Runs entirely on your machine. No account, no cloud, no telemetry, and on Windows it never uses your microphone.</p></div>
+</div>
+
+<h2>Set up in three steps</h2>
+<ol class="steps">
+  <li><strong>Install.</strong> Run the Windows installer or open the Mac app. It sets up the free virtual audio driver it needs.</li>
+  <li><strong>Pick your speakers.</strong> The dashboard opens in your browser. Turn on the Sonos speakers you want.</li>
+  <li><strong>Play something and press Auto.</strong> PC2Sonos measures the delay, and your PC speakers and Sonos play together from then on.</li>
+</ol>
+
+<h2>Common questions</h2>
+<details><summary>Is it really free?</summary><p>Yes. There's no paid version, trial or license key. If it's useful to you, there's an optional pay-what-you-want donation.</p></details>
+<details><summary>Does it need the Sonos app or a Sonos account?</summary><p>No. PC2Sonos talks to your speakers directly on your home network.</p></details>
+<details><summary>Can I just use Sonos as my computer speaker, without my PC speakers?</summary><p>Yes. Leave the PC speaker volume at zero, or unplug them, and only Sonos plays.</p></details>
+<details><summary>Which Sonos speakers work?</summary><p>Any Sonos speaker on your network. Turn on as many as you like and each gets its own volume.</p></details>
+<p><a href="faq.html">More questions and answers</a></p>
+
+</div></main>
+<footer class="site"><div class="wrap">
+  PC2Sonos is free and open source. <a href="https://github.com/Austinshu/PC2Sonos">Source on GitHub</a> ·
+  <a href="https://github.com/Austinshu/PC2Sonos/releases">Release notes</a> ·
+  <a href="https://buy.stripe.com/eVq7sF9Iv4LjfeM4JScbC01">Support the project</a><br>
+  PC2Sonos is an independent project and isn't affiliated with or endorsed by Sonos, Inc.
+</div></footer>
+</body>
+</html>

@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://austinshu.github.io/PC2Sonos/sitemap.xml

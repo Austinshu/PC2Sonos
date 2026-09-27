@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to play PC audio on Sonos in Windows 10 and 11</title>
+<meta name="description" content="Stream everything your Windows PC plays to Sonos speakers, and keep your PC speakers in sync with no echo, using the free PC2Sonos app.">
+<link rel="canonical" href="https://austinshu.github.io/PC2Sonos/windows.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PC2Sonos">
+<meta property="og:title" content="How to play PC audio on Sonos in Windows 10 and 11">
+<meta property="og:description" content="Stream everything your Windows PC plays to Sonos speakers, and keep your PC speakers in sync with no echo, using the free PC2Sonos app.">
+<meta property="og:url" content="https://austinshu.github.io/PC2Sonos/windows.html">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="index.html">PC2Sonos</a>
+  <nav><a href="index.html">Home</a><a href="download.html">Download</a><a href="windows.html" aria-current="page">Windows</a><a href="mac.html">Mac</a><a href="faq.html">FAQ</a></nav>
+</div></header>
+<main><div class="wrap">
+
+<h1>How to play your PC's audio on Sonos (Windows)</h1>
+<p class="lead">Sonos has no button for "play my computer". Here's how to send everything your Windows PC plays to your Sonos speakers, and keep your PC speakers in sync with them.</p>
+<div class="buttons">
+  <a class="btn" id="dl" href="download.html">Download free</a>
+  <a class="btn secondary" href="https://github.com/Austinshu/PC2Sonos">View on GitHub</a>
+</div>
+<p class="note" id="dlnote">Windows 10 or newer, macOS 12 or newer. No account needed.</p>
+<script>
+(function () {
+  var ua = navigator.userAgent || "", btn = document.getElementById("dl"), note = document.getElementById("dlnote");
+  if (/Windows/i.test(ua)) {
+    btn.href = "https://github.com/Austinshu/PC2Sonos/releases/latest/download/PC2Sonos-Setup.exe"; btn.textContent = "Download for Windows";
+    note.innerHTML = 'Free for Windows 10 and 11. On a Mac? <a href="download.html">Get the Mac version</a>.';
+  } else if (/Macintosh|Mac OS X/i.test(ua)) {
+    btn.href = "download.html#mac"; btn.textContent = "Download for Mac";
+  }
+})();
+</script>
+
+<h2>The short answer</h2>
+<p>Install PC2Sonos, turn on the Sonos speakers you want in its dashboard, and play anything: Spotify, YouTube, games, Netflix in a browser, system sounds. It works with Windows 10 and 11 and needs no Sonos account.</p>
+
+<h2>How it works</h2>
+<p>PC2Sonos installs VB-Audio Virtual Cable, a free virtual sound card, and makes it your default playback device. Everything Windows plays goes into the cable. PC2Sonos reads the cable and streams it to your Sonos speakers over your home network. At the same time it plays a copy to your real PC speakers or headphones, delayed to match Sonos.</p>
+
+<h2>Why your PC speakers and Sonos don't line up by default</h2>
+<p>Sonos buffers about one to two seconds of audio so every speaker in a group plays in step. That delay can't be switched off. PC2Sonos delays your PC speakers by the same amount so the two play together. Press <strong>Auto</strong> on the dashboard and it measures the delay from Sonos's own playback clock, with no microphone involved.</p>
+
+<h2>Only some apps on Sonos</h2>
+<p>Under <strong>Audio source</strong> you can tick just the apps you want on Sonos, like a music player and a browser, while notification sounds stay on your PC. This needs Windows 10 21H2 or newer.</p>
+
+<h2>Volume</h2>
+<p>While PC2Sonos runs, Windows' volume keys control the virtual cable, so turn Sonos up or down per speaker in the dashboard. Your PC speakers' own Windows volume is on the dashboard too, so you never have to dig through Sound settings.</p>
+
+<h2>Does it use my microphone?</h2>
+<p>No. PC2Sonos reads the cable by loopback, which Windows doesn't count as microphone access. It isn't listed under Privacy &gt; Microphone and the microphone indicator stays off.</p>
+
+<p><a href="download.html#windows">Download for Windows</a> · <a href="faq.html">FAQ</a></p>
+
+</div></main>
+<footer class="site"><div class="wrap">
+  PC2Sonos is free and open source. <a href="https://github.com/Austinshu/PC2Sonos">Source on GitHub</a> ·
+  <a href="https://github.com/Austinshu/PC2Sonos/releases">Release notes</a> ·
+  <a href="https://buy.stripe.com/eVq7sF9Iv4LjfeM4JScbC01">Support the project</a><br>
+  PC2Sonos is an independent project and isn't affiliated with or endorsed by Sonos, Inc.
+</div></footer>
+</body>
+</html>
