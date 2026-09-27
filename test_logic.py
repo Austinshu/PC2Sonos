@@ -332,7 +332,24 @@ print("  OK")
 
 print("[test] webapp Flask routes...")
 import webapp  # noqa: E402
+import windows_audio  # noqa: E402
 webapp.app.testing = True
+_fake_endpoints = {}  # name -> {"percent", "muted", "db"}
+windows_audio.get_endpoint_volume = lambda name: (
+    {k: _fake_endpoints[name][k] for k in ("percent", "muted")} if name in _fake_endpoints else None)
+def _fake_set_endpoint_volume(name, percent):
+    if name not in _fake_endpoints:
+        return False, f"no active playback device named '{name}'"
+    _fake_endpoints[name].update(percent=percent, muted=False)
+    return True, name
+windows_audio.set_endpoint_volume = _fake_set_endpoint_volume
+def _fake_fold(name, gain):
+    if name not in _fake_endpoints:
+        return False, "missing"
+    _fake_endpoints[name]["db"] = windows_audio.folded_level_db(_fake_endpoints[name]["db"], gain, -65.25)
+    return True, name
+windows_audio.fold_gain_into_endpoint = _fake_fold
+webapp._direct_speaker_volume = lambda: False
 client = webapp.app.test_client()
 
 r = client.get("/")
@@ -384,10 +401,10 @@ assert audio_engine.get_current_render_device_names() == ["Speakers (Realtek(R) 
 audio_engine._stop_all_render_sessions()  # clean up the thread this test started
 print("  /api/render_device OK (explicit device switch works)")
 
-# A speaker's own Windows volume left low (6% on a real PC) made the PC
-# speakers far quieter than normal with PC2Sonos at 100% -- the volume keys
-# move the cable, so nothing on screen pointed at it. The dashboard flags it.
-import windows_audio
+# On Windows the PC speaker Volume slider IS the speakers' own Windows
+# volume. A digital volume stacked on top of it was misleading: Realtek was
+# left at 6% in Windows (the volume keys move the cable, not the speakers),
+# so the speakers were nearly silent with the dashboard at 100% and 500% boost.
 eps = [("id-rt", "Speakers (Realtek(R) Audio)"), ("id-cable", "CABLE Input (VB-Audio Virtual Cable)"),
        ("id-hp1", "Headphones (2- Arctis Nova Pro Wireless)"),
        ("id-hp2", "Headphones (2- Arctis Nova Pro Wireless) Chat")]
@@ -395,29 +412,84 @@ assert windows_audio.match_render_endpoint("speakers (realtek(r) audio)", eps) =
 assert windows_audio.match_render_endpoint("Speakers (Realtek(R) Audi", eps) == "id-rt"  # MME's 31-char cut
 assert windows_audio.match_render_endpoint("Headphones (2- Arctis Nova Pro", eps) is None  # ambiguous prefix
 assert windows_audio.match_render_endpoint("", eps) is None
-assert windows_audio.is_low_endpoint_volume(6, False)
-assert windows_audio.is_low_endpoint_volume(100, True)
-assert not windows_audio.is_low_endpoint_volume(80, False)
+assert abs(windows_audio.folded_level_db(-10.3, 0.25, -65.25) - (-22.34)) < 0.01  # 25% = -12.04dB
+assert windows_audio.folded_level_db(-60.0, 0.01, -65.25) == -65.25  # floored at the device minimum
+assert windows_audio.folded_level_db(-5.0, 0.0, -65.25) == -65.25
 
-_fake_vols = {"Speakers (Realtek(R) Audio)": {"percent": 6, "muted": False}}
-_real_get_vol, _real_set_vol = windows_audio.get_endpoint_volume, windows_audio.set_endpoint_volume_full
-_real_current, _real_platform = webapp.get_current_render_device_names, sys.platform
-windows_audio.get_endpoint_volume = lambda name: _fake_vols.get(name)
-windows_audio.set_endpoint_volume_full = lambda name: (_fake_vols.__setitem__(name, {"percent": 100, "muted": False}), (True, name))[1]
-webapp.get_current_render_device_names = lambda: ["Speakers (Realtek(R) Audio)"]
-sys.platform = "win32"
+_real_current = webapp.get_current_render_device_names
+_fake_endpoints.clear()
+_fake_endpoints["Speakers (Realtek(R) Audio)"] = {"percent": 6, "muted": True, "db": -39.8}
+_fake_endpoints["Headphones (Arctis)"] = {"percent": 70, "muted": False, "db": -5.0}
+webapp._direct_speaker_volume = lambda: True
+webapp.config["local_volume"] = 1.0
 try:
-    body = client.get("/api/speaker_windows_volume").get_json()
-    assert body["speakers"] == [{"name": "Speakers (Realtek(R) Audio)", "percent": 6,
-                                 "muted": False, "low": True}], body
-    r = client.post("/api/speaker_windows_volume", json={"name": "CABLE Input (VB-Audio Virtual Cable)"})
-    assert r.status_code == 400, "only a speaker PC2Sonos is playing to can be changed"
-    body = client.post("/api/speaker_windows_volume", json={"name": "Speakers (Realtek(R) Audio)"}).get_json()
-    assert body["speakers"][0]["percent"] == 100 and not body["speakers"][0]["low"], body
+    webapp.get_current_render_device_names = lambda: []
+    body = client.get("/api/local_volume").get_json()
+    assert body["direct"] and body["percent"] is None, "no speaker playing yet: nothing to show"
+    r = client.post("/api/local_volume", json={"percent": 50})
+    assert r.status_code == 409 and "no PC speaker" in r.get_json()["error"]
+
+    webapp.get_current_render_device_names = lambda: ["Speakers (Realtek(R) Audio)", "Headphones (Arctis)"]
+    body = client.get("/api/local_volume").get_json()
+    assert body == {"ok": True, "percent": 6, "direct": True, "muted": True}, body
+    r = client.get("/")
+    assert b'id="localVolume" value="6"' in r.data, "the slider shows the Windows volume"
+    body = client.post("/api/local_volume", json={"percent": 40}).get_json()
+    assert body["percent"] == 40 and not body["muted"], body
+    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 40
+    assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 40, "every PC speaker in use is set"
+    assert webapp.config["local_volume"] == 1.0, "no digital volume on top of the Windows one"
+    client.post("/api/local_volume", json={"percent": 999})
+    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 100
+
+    # the master slider scales the Windows volume (down only), and restores it at 100
+    _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] = 80
+    webapp._master_volume_baseline = None
+    body = client.post("/api/master_volume", json={"percent": 50}).get_json()
+    assert body["local_volume_percent"] == 40 and _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 40
+    client.post("/api/master_volume", json={"percent": 100})
+    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 80
+    assert webapp.config["local_volume"] == 1.0
 finally:
-    windows_audio.get_endpoint_volume, windows_audio.set_endpoint_volume_full = _real_get_vol, _real_set_vol
-    webapp.get_current_render_device_names, sys.platform = _real_current, _real_platform
-print("  /api/speaker_windows_volume OK (a speaker left low in Windows is flagged and fixable)")
+    webapp._direct_speaker_volume = lambda: False
+    webapp.get_current_render_device_names = _real_current
+    webapp._master_volume_baseline = None
+print("  /api/local_volume (Windows): the slider is the speakers' own Windows volume OK")
+
+# An old digital volume is carried into the Windows volume once, with no jump
+# in loudness -- all speakers or none, so none is ever turned down twice.
+_real_platform, _real_backend = audio_engine.sys.platform, audio_engine.pyaudio.BACKEND
+_real_substrs = audio_engine._active_device_substrs
+audio_engine.sys.platform = "win32"
+try:
+    _fake_endpoints.clear()
+    _fake_endpoints["Speakers (Realtek(R) Audio)"] = {"percent": 50, "muted": False, "db": -10.3}
+    audio_engine.config["local_volume"] = 0.25
+    audio_engine.fold_local_volume_into_windows()
+    assert abs(_fake_endpoints["Speakers (Realtek(R) Audio)"]["db"] - (-22.34)) < 0.01
+    assert audio_engine.config["local_volume"] == 1.0
+    audio_engine.fold_local_volume_into_windows()  # nothing left to carry: a no-op
+    assert abs(_fake_endpoints["Speakers (Realtek(R) Audio)"]["db"] - (-22.34)) < 0.01
+
+    # a second, unreadable speaker: nothing is touched, the digital volume stays
+    audio_engine._active_device_substrs = lambda: ["Speakers (Realtek", "Microphone (USB Audio"]
+    _real_find = audio_engine.find_device_index
+    audio_engine.find_device_index = lambda substr, want_input=False: (
+        (2, {"name": "Speakers (Realtek(R) Audio)"}) if "Realtek" in substr else (3, {"name": "Unreadable"}))
+    try:
+        _fake_endpoints["Speakers (Realtek(R) Audio)"]["db"] = -10.3
+        audio_engine.config["local_volume"] = 0.5
+        audio_engine.fold_local_volume_into_windows()
+        assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["db"] == -10.3
+        assert audio_engine.config["local_volume"] == 0.5
+    finally:
+        audio_engine.find_device_index = _real_find
+finally:
+    audio_engine.sys.platform = _real_platform
+    audio_engine._active_device_substrs = _real_substrs
+    audio_engine.config["local_volume"] = 1.0
+    _fake_endpoints.clear()
+print("  the old digital PC speaker volume moves into Windows once, all or nothing OK")
 
 # Newer pycaw's GetSpeakers() returns an AudioDevice (.id, no .GetId()), which
 # made current_default_playback_name() always '' -- the diagnostics said

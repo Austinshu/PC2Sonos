@@ -16,6 +16,7 @@ cross-platform test harness can import this module on Linux.
 """
 
 
+import math
 from contextlib import contextmanager
 
 
@@ -156,15 +157,14 @@ def ensure_cable_is_default():
         return f"default-output check failed: {type(e).__name__}: {e}"
 
 
-# The Windows volume of a real speaker PC2Sonos plays to. Windows' volume
-# keys and taskbar slider only ever move the DEFAULT device, which is the
-# virtual cable while PC2Sonos runs, so a speaker's own volume is stranded at
-# whatever it was last set to -- and one left low (6% was found on a real PC)
-# makes the delayed PC-speaker audio far quieter than the same speakers
-# played directly, even with PC2Sonos's own volume at 100% and no boost.
-# The dashboard reads these to point that out and offer to fix it.
-
-LOW_ENDPOINT_VOLUME_PERCENT = 50
+# The Windows volume of the real speakers PC2Sonos plays to. On Windows the
+# dashboard's PC speaker Volume slider IS this setting -- the same one as in
+# Windows' Sound settings -- rather than a digital volume of PC2Sonos's own
+# stacked on top of it. Windows' volume keys and taskbar slider only ever
+# move the DEFAULT device, which is the virtual cable while PC2Sonos runs,
+# so without this a speaker's own volume was stranded wherever it was last
+# left: 6% was found on a real PC, and the PC speakers sounded far quieter
+# than normal with PC2Sonos's own volume at 100% and 500% boost.
 
 
 def match_render_endpoint(name, endpoints):
@@ -182,10 +182,6 @@ def match_render_endpoint(name, endpoints):
     return prefixed[0] if len(prefixed) == 1 else None
 
 
-def is_low_endpoint_volume(percent, muted):
-    return bool(muted) or percent < LOW_ENDPOINT_VOLUME_PERCENT
-
-
 def _render_endpoint_volume(name):
     """IAudioEndpointVolume for the active playback device called `name`,
     or None. Call inside _com()."""
@@ -197,8 +193,9 @@ def _render_endpoint_volume(name):
 
 
 def get_endpoint_volume(name):
-    """{"percent": 0-100, "muted": bool} for the playback device `name`,
-    or None if it can't be found or read."""
+    """{"percent": 0-100, "muted": bool} for the playback device `name` --
+    the number Windows' own volume slider shows -- or None if it can't be
+    found or read."""
     try:
         with _com():
             vol = _render_endpoint_volume(name)
@@ -210,16 +207,42 @@ def get_endpoint_volume(name):
         return None
 
 
-def set_endpoint_volume_full(name):
-    """Sets the playback device `name` to 100% and unmutes it. Returns
-    (ok, detail)."""
+def set_endpoint_volume(name, percent):
+    """Sets the playback device `name` to `percent` (0-100, on Windows' own
+    slider's scale) and unmutes it, as dragging Windows' slider does.
+    Returns (ok, detail)."""
     try:
         with _com():
             vol = _render_endpoint_volume(name)
             if vol is None:
                 return False, f"no active playback device named '{name}'"
-            vol.SetMasterVolumeLevelScalar(1.0, None)
+            vol.SetMasterVolumeLevelScalar(max(0, min(100, percent)) / 100.0, None)
             vol.SetMute(0, None)
+            return True, name
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def folded_level_db(current_db, gain, min_db):
+    """The Windows volume in dB that sounds the same as `current_db` with a
+    linear `gain` (0-1) applied on top, floored at the device's minimum."""
+    if gain <= 0:
+        return min_db
+    return max(min_db, min(0.0, current_db + 20 * math.log10(gain)))
+
+
+def fold_gain_into_endpoint(name, gain):
+    """Lowers the playback device `name` by a linear `gain` (0-1), so it
+    sounds the same as that gain applied digitally did. Used once, to carry
+    an old digital PC speaker volume over into the speaker's own Windows
+    volume without a jump in loudness. Returns (ok, detail)."""
+    try:
+        with _com():
+            vol = _render_endpoint_volume(name)
+            if vol is None:
+                return False, f"no active playback device named '{name}'"
+            min_db = vol.GetVolumeRange()[0]
+            vol.SetMasterVolumeLevel(folded_level_db(vol.GetMasterVolumeLevel(), gain, min_db), None)
             return True, name
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"

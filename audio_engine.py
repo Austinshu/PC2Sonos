@@ -1419,9 +1419,54 @@ def _stop_all_render_sessions():
         _current_render_device_names.clear()
 
 
+def fold_local_volume_into_windows():
+    """Windows: the PC speaker Volume is now the speakers' own Windows
+    volume (see windows_audio), no longer a digital volume applied in
+    _render_session. A digital volume left below 100% by an older version
+    is carried over once, by lowering each speaker's Windows volume by the
+    same amount, so nothing gets suddenly louder -- then it's set back to
+    100% and left there. If any speaker can't be adjusted the digital
+    volume stays as it was (still applied), and this is tried again next
+    launch."""
+    volume = config.get("local_volume", 1.0)
+    if sys.platform != "win32" or pyaudio.BACKEND != "pyaudiowpatch" or volume >= 1.0:
+        return
+    import windows_audio
+    names = []
+    for substr in _active_device_substrs():
+        idx, info = find_device_index(substr, want_input=False) if substr else auto_pick_render_device()
+        if idx is None:
+            print(f"[audio] PC speaker volume: '{substr}' isn't available; keeping the "
+                  f"{round(volume * 100)}% digital volume for now")
+            return
+        names.append(info["name"])
+    # all or nothing: a speaker lowered in Windows while the digital volume
+    # still applies (because another one failed) would be turned down twice
+    missing = [n for n in names if windows_audio.get_endpoint_volume(n) is None]
+    if missing:
+        print(f"[audio] PC speaker volume: can't read the Windows volume of {', '.join(missing)}; "
+              f"keeping the {round(volume * 100)}% digital volume for now")
+        return
+    for name in names:
+        ok, detail = windows_audio.fold_gain_into_endpoint(name, volume)
+        if not ok:
+            print(f"[audio] PC speaker volume: couldn't move {round(volume * 100)}% into "
+                  f"{name}'s Windows volume ({detail}); keeping it digital for now")
+            return
+    config["local_volume"] = 1.0
+    from config import save_config
+    save_config(config)
+    print(f"[audio] PC speaker volume: moved the {round(volume * 100)}% digital volume into the "
+          f"Windows volume of {', '.join(names)}; the dashboard's Volume slider now controls that directly")
+
+
 def start_audio_engine(stop_event):
     global _capture_stop_event, _capture_thread
     _harden_audio_scheduling()
+    try:
+        fold_local_volume_into_windows()
+    except Exception as e:
+        print(f"[audio] PC speaker volume carry-over failed: {e}")
     with _capture_lock:
         _capture_stop_event = threading.Event()
         _capture_thread = threading.Thread(target=capture_loop, args=(_capture_stop_event,), daemon=True)

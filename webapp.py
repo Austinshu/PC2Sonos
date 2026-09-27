@@ -450,7 +450,7 @@ DASHBOARD_HTML = """
     <label style="margin-bottom:6px;">Scale everything together</label>
     <details class="info-toggle">
       <summary>&#9432; How does this work?</summary>
-      <div class="card-desc">Scales every enabled Sonos speaker and the PC boost from wherever they're each set right now (individual volumes below stay fully adjustable afterward). 100% is a no-op. Below 100% turns everything down together, including the PC boost. Above 100% turns Sonos speakers up together (up to 100% each, a Sonos limit) -- but never the PC boost, which only ever moves down through this control. Raising the PC boost itself always needs the dedicated slider below, since that one carries its own hardware-risk warning that this control shouldn't be able to trigger as a side effect.</div>
+      <div class="card-desc">Scales every enabled Sonos speaker and the PC speaker volume from wherever they're each set right now (individual volumes below stay fully adjustable afterward). 100% is a no-op. Below 100% turns everything down together, including the PC speaker volume. Above 100% turns Sonos speakers up together (up to 100% each, a Sonos limit) -- but never the PC speaker volume, which only ever moves down through this control. The PC boost under Advanced is never touched by this control, since it carries its own hardware-risk warning that this control shouldn't be able to trigger as a side effect.</div>
     </details>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <input type="range" min="0" max="500" step="1" id="masterVolume" value="100"
@@ -502,17 +502,17 @@ DASHBOARD_HTML = """
     <label style="margin-bottom:2px;">Volume</label>
     <details class="info-toggle">
       <summary>&#9432; What does this do?</summary>
-      <div class="card-desc">How loud PC2Sonos plays the delayed audio through the device above, on top of Windows' own volume for it. 100% is the original level and lower turns it down. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top. Note that Windows' own volume keys and taskbar slider control the virtual cable, not your speakers; the speakers' own Windows volume is under Settings &gt; System &gt; Sound, on your speakers' entry. (If an aux/line-out speaker is still too quiet with that turned up, there's a separate boost under Advanced.)</div>
+      <div class="card-desc">{% if direct_speaker_volume %}This is your PC speakers' own Windows volume: the same setting as your speakers' entry under Settings &gt; System &gt; Sound, so what you see here is exactly what they're set to. Windows' volume keys and taskbar slider can't reach it while PC2Sonos runs, because they control the virtual cable instead. With more than one PC speaker ticked above, this sets all of them. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top. (If an aux/line-out speaker is still too quiet at 100%, there's a separate boost under Advanced.){% else %}How loud PC2Sonos plays the delayed audio through the device above, on top of your Mac's own volume for it. 100% is the original level and lower turns it down. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top. (If an aux/line-out speaker is still too quiet with that turned up, there's a separate boost under Advanced.){% endif %}</div>
     </details>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <input type="range" min="0" max="100" step="1" id="localVolume" value="{{local_volume_percent}}"
-             oninput="syncLocalVolume('slider')" onchange="setLocalVolume()" style="flex:1; min-width:150px;">
+             oninput="localVolumeBusy = true; syncLocalVolume('slider')" onchange="setLocalVolume()" style="flex:1; min-width:150px;">
       <input type="number" min="0" max="100" step="1" id="localVolumeNum" value="{{local_volume_percent}}"
-             oninput="syncLocalVolume('number')" onchange="setLocalVolume()"
+             oninput="localVolumeBusy = true; syncLocalVolume('number')" onchange="setLocalVolume()"
              style="width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
       <span>%</span>
     </div>
-    <div id="speakerWinVolWarn" style="display:none; margin-top:8px; font-size:12px; color:#e0b050;"></div>
+    <div id="localVolumeNote" style="display:none; margin-top:8px; font-size:12px; color:#e0b050;"></div>
   </div>
 </div>
 
@@ -867,7 +867,7 @@ async function applyMasterVolume(){
   // everything back to where it was before you started turning it down
   // (the backend scales from a fixed baseline, not from whatever the
   // last press left things at, so this is always reversible)
-  if (data.local_volume_percent !== undefined) {
+  if (data.local_volume_percent !== undefined && data.local_volume_percent !== null) {
     document.getElementById('localVolume').value = data.local_volume_percent;
     syncLocalVolume('slider');
   }
@@ -921,7 +921,13 @@ function syncLocalVolume(source){
 }
 async function setLocalVolume(){
   const v = document.getElementById('localVolume').value;
-  await fetch('/api/local_volume', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({percent: parseInt(v)})});
+  let data = {};
+  try {
+    const res = await fetch('/api/local_volume', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({percent: parseInt(v)})});
+    data = await res.json();
+  } catch (e) {}
+  localVolumeBusy = false;
+  showLocalVolume(data);
 }
 async function setLocalGain(){
   const v = document.getElementById('localGain').value;
@@ -993,31 +999,27 @@ async function loadDevices(){
   });
   document.getElementById('statDevice').textContent = data.current.join(', ') || '—';
 }
-async function loadSpeakerWindowsVolume(){
-  // A speaker's own Windows volume can't be reached with the volume keys
-  // while PC2Sonos runs (they move the virtual cable), so point it out
-  // when it's been left low -- that's the usual cause of "too quiet".
-  const warn = document.getElementById('speakerWinVolWarn');
+let localVolumeBusy = false;  // true while the slider is being dragged/typed in
+async function loadLocalVolume(){
+  // On Windows the slider is the speakers' own Windows volume, which can
+  // also be changed in Windows' Sound settings -- keep it in step.
+  if (localVolumeBusy) return;
   let data;
-  try { data = await (await fetch('/api/speaker_windows_volume')).json(); } catch (e) { return; }
-  const low = (data.speakers || []).filter(s => s.low);
-  warn.innerHTML = '';
-  warn.style.display = low.length ? 'block' : 'none';
-  low.forEach(s => {
-    const line = document.createElement('div');
-    line.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;';
-    line.appendChild(document.createTextNode(
-      `Windows has ${s.name} at ${s.muted ? 'mute' : s.percent + '%'}, so it will sound quiet even at 100% here. `));
-    const btn = document.createElement('button');
-    btn.textContent = 'Set it to 100%';
-    btn.onclick = async () => {
-      btn.disabled = true;
-      await fetch('/api/speaker_windows_volume', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: s.name})});
-      loadSpeakerWindowsVolume();
-    };
-    line.appendChild(btn);
-    warn.appendChild(line);
-  });
+  try { data = await (await fetch('/api/local_volume')).json(); } catch (e) { return; }
+  showLocalVolume(data);
+}
+function showLocalVolume(data){
+  const note = document.getElementById('localVolumeNote');
+  if (data.percent !== null && data.percent !== undefined && !localVolumeBusy) {
+    document.getElementById('localVolume').value = data.percent;
+    syncLocalVolume('slider');
+  }
+  let msg = '';
+  if (data.error) msg = "Couldn't set it: " + data.error + '.';
+  else if (data.direct && (data.percent === null || data.percent === undefined)) msg = 'Waiting for a PC speaker to start playing.';
+  else if (data.muted) msg = 'Muted in Windows. Moving the slider unmutes it.';
+  note.textContent = msg;
+  note.style.display = msg ? 'block' : 'none';
 }
 async function setDevice(){
   const list = document.getElementById('renderDeviceList');
@@ -1496,8 +1498,8 @@ checkDonatePrompt();
 checkUpdate();
 checkPlatform();
 setInterval(checkPlatform, 5000);
-loadSpeakerWindowsVolume();
-setInterval(loadSpeakerWindowsVolume, 5000);
+loadLocalVolume();
+setInterval(loadLocalVolume, 3000);
 syncLocalVolume('slider');
 syncLocalGain('slider');  // shows the warning immediately if the saved boost is already past 100%
 setLocalEq();  // shows the warning immediately if a saved EQ band is already past +/-6dB
@@ -1514,7 +1516,8 @@ setInterval(loadLevel, 300);
 def dashboard():
     return render_template_string(
         DASHBOARD_HTML, delay=config["local_delay_ms"], donate_url=DONATE_URL,
-        local_volume_percent=round(config.get("local_volume", 1.0) * 100),
+        local_volume_percent=_get_local_volume()["percent"] or 0,
+        direct_speaker_volume=_direct_speaker_volume(),
         local_gain_percent=round(max(1.0, config.get("local_render_gain", 1.0)) * 100),
         eq_bass_db=round(config.get("local_eq_bass_db", 0.0)),
         eq_mid_db=round(config.get("local_eq_mid_db", 0.0)),
@@ -1646,16 +1649,17 @@ def api_master_volume():
         if _master_volume_baseline is None:
             _master_volume_baseline = {
                 "speakers": {s["uid"]: s["volume"] for s in speaker_mgr.list() if s["enabled"]},
-                "local_volume_percent": round(config.get("local_volume", 1.0) * 100),
+                "local_volume_percent": _get_local_volume()["percent"],
             }
 
         scale = percent / 100.0
         volume_scale = min(1.0, scale)  # PC volume: down only, never above its baseline
         for uid, base_volume in _master_volume_baseline["speakers"].items():
             speaker_mgr.set_volume(uid, round(base_volume * scale))
-        new_volume_percent = max(0, min(100, round(_master_volume_baseline["local_volume_percent"] * volume_scale)))
-        config["local_volume"] = new_volume_percent / 100.0
-        save_config(config)
+        new_volume_percent = None
+        if _master_volume_baseline["local_volume_percent"] is not None:
+            new_volume_percent = max(0, min(100, round(_master_volume_baseline["local_volume_percent"] * volume_scale)))
+            _set_local_volume(new_volume_percent)
 
         if percent == 100:
             _master_volume_baseline = None
@@ -1762,16 +1766,59 @@ def api_set_local_gain():
     return jsonify({"ok": True})
 
 
-@app.route("/api/local_volume", methods=["POST"])
-def api_set_local_volume():
+def _direct_speaker_volume():
+    """True where the PC speaker Volume slider is the speakers' own Windows
+    volume (see windows_audio) rather than a digital volume of PC2Sonos's
+    own. A separate digital volume stacked on the Windows one was
+    misleading: at 100% the speakers could still be nearly silent because
+    of a Windows setting nothing on the dashboard showed."""
+    return sys.platform == "win32"
+
+
+def _get_local_volume():
+    """{"percent", "direct", "muted"} for the PC speaker Volume slider.
+    percent is None when it's direct but no PC speaker is playing yet (or
+    Windows won't say), so the dashboard leaves the slider alone."""
+    if not _direct_speaker_volume():
+        return {"percent": round(config.get("local_volume", 1.0) * 100), "direct": False, "muted": False}
+    import windows_audio
+    vols = [v for v in (windows_audio.get_endpoint_volume(n) for n in get_current_render_device_names())
+            if v is not None]
+    if not vols:
+        return {"percent": None, "direct": True, "muted": False}
+    return {"percent": vols[0]["percent"], "direct": True, "muted": any(v["muted"] for v in vols)}
+
+
+def _set_local_volume(percent):
+    """Sets the PC speaker Volume (0-100). Direct: every PC speaker in use
+    goes to that Windows volume, unmuted. Returns (ok, error)."""
+    if not _direct_speaker_volume():
+        # digital: read fresh every chunk in the render loop
+        config["local_volume"] = percent / 100.0
+        save_config(config)
+        return True, None
+    import windows_audio
+    names = get_current_render_device_names()
+    if not names:
+        return False, "no PC speaker is playing right now"
+    for name in names:
+        ok, detail = windows_audio.set_endpoint_volume(name, percent)
+        if not ok:
+            return False, detail
+    return True, None
+
+
+@app.route("/api/local_volume", methods=["GET", "POST"])
+def api_local_volume():
     # The PC speaker VOLUME: percent 0-100, the plain slider on the main
-    # page (100 = the original level). Read fresh every chunk in the render
-    # loop, so it takes effect immediately.
-    data = request.get_json(force=True)
-    percent = max(0, min(100, int(data.get("percent", 100))))
-    config["local_volume"] = percent / 100.0
-    save_config(config)
-    return jsonify({"ok": True})
+    # page. On Windows it's the speakers' own Windows volume; see
+    # _direct_speaker_volume.
+    if request.method == "POST":
+        data = request.get_json(force=True)
+        ok, error = _set_local_volume(max(0, min(100, int(data.get("percent", 100)))))
+        if not ok:
+            return jsonify({"ok": False, "error": error, **_get_local_volume()}), 409
+    return jsonify({"ok": True, **_get_local_volume()})
 
 
 @app.route("/api/local_eq", methods=["POST"])
@@ -1806,36 +1853,6 @@ def api_devices():
         "current": get_current_render_device_names(),
         "configured": config.get("render_devices", []),
     })
-
-
-@app.route("/api/speaker_windows_volume", methods=["GET", "POST"])
-def api_speaker_windows_volume():
-    """The Windows volume of each local speaker PC2Sonos is playing to,
-    flagged `low` when it's muted or well down -- Windows' volume keys move
-    the virtual cable while PC2Sonos runs, so a speaker left low stays low
-    and the delayed audio sounds far quieter than normal (see
-    windows_audio.get_endpoint_volume). POST {name} sets that speaker to
-    100% and unmutes it; only a speaker currently in use can be named.
-    Windows only: elsewhere `speakers` is always empty."""
-    if sys.platform != "win32":
-        return jsonify({"ok": True, "speakers": []})
-    import windows_audio
-    current = get_current_render_device_names()
-    if request.method == "POST":
-        name = (request.get_json(force=True) or {}).get("name")
-        if name not in current:
-            return jsonify({"ok": False, "error": "not a speaker PC2Sonos is playing to"}), 400
-        ok, detail = windows_audio.set_endpoint_volume_full(name)
-        print(f"[audio] set {name}'s Windows volume to 100%: {'ok' if ok else detail}")
-        if not ok:
-            return jsonify({"ok": False, "error": detail}), 500
-    speakers = []
-    for name in current:
-        vol = windows_audio.get_endpoint_volume(name)
-        if vol is not None:
-            speakers.append({"name": name, **vol,
-                             "low": windows_audio.is_low_endpoint_volume(vol["percent"], vol["muted"])})
-    return jsonify({"ok": True, "speakers": speakers})
 
 
 @app.route("/api/platform_status")
