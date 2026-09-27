@@ -44,6 +44,35 @@ telemetry, no account, and no license check -- it's a local web dashboard
 (default `http://127.0.0.1:5757`) plus a background audio/streaming
 engine, fully offline apart from that one-time-per-launch update check.
 
+## What's new in v1.5.4
+
+v1.5.4 is a small fix release. Everything described under v1.5.3 and
+earlier below is part of this release as well.
+
+**A warning when your PC speakers' own Windows volume is set low.** While
+PC2Sonos runs, Windows' volume keys and taskbar slider control the virtual
+cable, not your real speakers. That means your speakers' own Windows volume
+stays wherever it was last set, and you can't reach it without opening
+Sound settings. If it was left low, the PC speakers sound much quieter
+through PC2Sonos than they do normally, even with PC2Sonos's own Volume at
+100% and no boost. PC2Sonos passes the audio through at full level; the
+drop happens in Windows after that. On one PC the speakers had been left at
+6%, about 40 dB down. The dashboard now shows a warning under the PC speaker
+Volume when a speaker it's playing to is muted or below 50% in Windows. The
+warning has a "Set it to 100%" button that raises that speaker's Windows
+volume and unmutes it. Nothing changes unless you press it, because some
+speakers with their own amplifier are meant to run low in Windows.
+
+**The startup diagnostics can check the virtual cable again.** Every launch
+wrote a diagnostics snapshot to the log, and its virtual cable and default
+output lines always said "couldn't check". The check ran on a background
+thread that hadn't set up the Windows audio interface first. That's fixed.
+While fixing it, another problem turned up: a newer version of the pycaw
+library returns the default output in a different form, so PC2Sonos always
+read its name as blank. As a result, startup never recognized the virtual
+cable as already being the default output, and it set it again on every
+launch. Both now work, and there are regression tests for them.
+
 ## What's new in v1.5.3
 
 v1.5.3 adds three things to the dashboard and removes one. It also fixes a
