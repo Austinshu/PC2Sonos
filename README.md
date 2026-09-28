@@ -57,12 +57,15 @@ What's new in each version is on the
 
 ## Using it
 
-**PC speaker volume.** On Windows, the Volume slider in the PC speaker
-output card is your speakers' own Windows volume, the same setting as in
-Settings > System > Sound. It's on the dashboard because Windows' volume
-keys can't reach your speakers while PC2Sonos runs; they control the
-virtual cable instead. On macOS it's PC2Sonos's own volume for the Mac's
-speakers. Sonos speakers have their own volume sliders.
+**PC speaker volume.** On Windows, each PC speaker you tick gets its own
+Volume slider in the PC speaker output card, so headphones and desk speakers
+can sit at different levels. Each one is that device's own Windows volume,
+the same setting as in Settings > System > Sound. It's on the dashboard
+because Windows' volume keys can't reach your speakers while PC2Sonos runs;
+they control the virtual cable instead. A few headsets report a volume that
+Windows can't change (only their own knob does); for those, the slider is
+PC2Sonos's own volume for that device. On macOS it's one PC2Sonos volume for
+the Mac's speakers. Sonos speakers have their own volume sliders.
 
 **Boost and EQ (Advanced).** If a speaker is still too quiet at full
 volume, as a passive speaker on an aux input can be, there's a boost of up
