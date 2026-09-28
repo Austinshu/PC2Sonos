@@ -24,6 +24,7 @@ if _pa is not None:
     BACKEND = "pyaudiowpatch"
     PyAudio = _pa.PyAudio
     paInt16 = _pa.paInt16
+    paFloat32 = _pa.paFloat32
     paWASAPI = _pa.paWASAPI
 else:
     import sounddevice as _sd
@@ -31,6 +32,7 @@ else:
     BACKEND = "sounddevice"
     # PyAudio's constants; the values only matter for equality checks.
     paInt16 = 8
+    paFloat32 = 1  # PortAudio's value; this backend only opens 16-bit streams
     paWASAPI = 13
 
     class _Stream:

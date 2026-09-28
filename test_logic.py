@@ -14,6 +14,7 @@ import time
 # ---- stub pyaudiowpatch before anything imports it ----
 fake_pyaudio = types.ModuleType("pyaudiowpatch")
 fake_pyaudio.paInt16 = 8
+fake_pyaudio.paFloat32 = 1
 fake_pyaudio.paWASAPI = 13
 
 
@@ -614,6 +615,24 @@ assert int(_np_lv.abs(_boosted).max()) < 32767, "boosted audio must be soft-limi
 _q = _np_lv.array([100, -100, 250, -250], dtype=_np_lv.int16).tobytes()
 assert audio_engine._apply_local_levels(_q, 1.0, 1.0) == _q
 print("  PC speaker level chain: boost then a linear volume, proportional at any boost OK")
+
+# Windows renders float: a low digital volume on 16-bit output left ~12 bits,
+# heard as static with a headset's own knob turned up to compensate.
+_src = _np_lv.frombuffer(_loud_music, dtype=_np_lv.int16).astype(_np_lv.float64) / 32768.0
+_f = _np_lv.frombuffer(audio_engine._levels_to_float_out(_loud_music, 0.06, 1.0, 0.06, 2), dtype=_np_lv.float32)
+assert _np_lv.abs(_f - _src * 0.06).max() < 1e-6, "no resolution lost at a low volume"
+_old16 = _np_lv.frombuffer(audio_engine._apply_local_levels(_loud_music, 0.06, 1.0), dtype=_np_lv.int16) / 32768.0
+assert _np_lv.abs(_old16 - _src * 0.06).max() > 1e-5  # the 16-bit path really did lose it
+_u = _np_lv.frombuffer(audio_engine._levels_to_float_out(_loud_music, 1.0, 1.0, 1.0, 2), dtype=_np_lv.float32)
+assert _np_lv.array_equal(_u, (_src).astype(_np_lv.float32)), "unity is a plain format conversion"
+# a volume change ramps across the chunk instead of stepping (a click)
+_dc = (_np_lv.full(2000, 16384, dtype=_np_lv.int16)).tobytes()  # 1000 stereo frames at 0.5
+_r = _np_lv.frombuffer(audio_engine._levels_to_float_out(_dc, 0.2, 1.0, 1.0, 2), dtype=_np_lv.float32).reshape(-1, 2)
+assert abs(_r[0, 0] - 0.5) < 1e-6 and abs(_r[-1, 0] - 0.1) < 0.001 and _np_lv.all(_np_lv.diff(_r[:, 0]) <= 0)
+assert _np_lv.array_equal(_r[:, 0], _r[:, 1]), "both channels ramp together"
+assert _np_lv.abs(_np_lv.frombuffer(audio_engine._levels_to_float_out(_loud_music, 1.0, 5.0, 1.0, 2),
+                                    dtype=_np_lv.float32)).max() <= 1.0, "boost still soft-limited"
+print("  PC speaker output is float with a ramped volume (no static at low levels, no clicks) OK")
 
 # an old config had ONE gain (0-500%); a value below 100% was volume, above was boost
 _m = {**_cfgmod.DEFAULT_CONFIG, "local_render_gain": 0.5}

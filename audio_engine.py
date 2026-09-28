@@ -969,6 +969,31 @@ def _apply_local_levels(pcm_bytes, volume, boost):
     return np.clip(samples, -32768, 32767).astype(np.int16).tobytes()
 
 
+def _levels_to_float_out(pcm_bytes, volume, boost, prev_volume, channels):
+    """_apply_local_levels, but producing 32-bit float output (for a render
+    stream opened as paFloat32) with the volume ramped smoothly from
+    `prev_volume` to `volume` across the chunk.
+
+    Float because a digital volume applied to 16-bit output throws away
+    resolution: at 6% only about 12 of the 16 bits are left, and with the
+    device's own knob turned up to make up the level (a headset whose
+    Windows volume is fixed, like the Arctis Nova Pro), that grainy
+    quantization is audible as static. Windows mixes in float anyway, so
+    handing it float loses nothing. The ramp stops a volume change from
+    stepping mid-waveform, which clicks."""
+    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    if boost > 1.0:
+        samples = _soft_limit(samples * boost)
+    if volume != 1.0 or prev_volume != 1.0:
+        frames = len(samples) // channels
+        if prev_volume != volume and frames > 0:
+            ramp = np.linspace(prev_volume, volume, frames, endpoint=False, dtype=np.float32)
+            samples = (samples[:frames * channels].reshape(frames, channels) * ramp[:, None]).reshape(-1)
+        else:
+            samples = samples * volume
+    return np.clip(samples, -1.0, 1.0).astype(np.float32).tobytes()
+
+
 def _apply_local_gain(pcm_bytes, gain):
     """Amplifies 16-bit PCM by `gain`, soft-limiting (see _soft_limit)
     instead of hard-clipping as the signal approaches full scale. Real
@@ -1287,7 +1312,11 @@ def _render_session(stop_event, device_substr):
     render_rate = int(info.get("defaultSampleRate", capture_rate))
     render_channels = min(capture_channels, int(info.get("maxOutputChannels", capture_channels)) or capture_channels)
 
-    stream = _pa.open(format=pyaudio.paInt16, channels=render_channels, rate=render_rate,
+    # Windows: float output, so a volume below 100% keeps its resolution
+    # (see _levels_to_float_out). The macOS backend only does 16-bit.
+    float_out = pyaudio.BACKEND == "pyaudiowpatch"
+    stream = _pa.open(format=pyaudio.paFloat32 if float_out else pyaudio.paInt16,
+                       channels=render_channels, rate=render_rate,
                        output=True, output_device_index=idx, frames_per_buffer=CHUNK)
     with _render_names_lock:
         _current_render_device_names[device_substr] = info["name"]
@@ -1313,6 +1342,7 @@ def _render_session(stop_event, device_substr):
     backlog_guard = _StandingBacklogGuard()
     chunk_ms = CHUNK / float(capture_rate) * 1000.0
     last_catch_up_log = 0.0
+    prev_volume = None  # the volume the last chunk ended on, for the ramp
 
     try:
         while not stop_event.is_set():
@@ -1375,7 +1405,12 @@ def _render_session(stop_event, device_substr):
                         capture_rate, render_rate, resample_state)
                 if out:
                     out = eq.process(out, bass_db, mid_db, treble_db)
-                if out and (volume != 1.0 or boost != 1.0):
+                if out and float_out:
+                    out = _levels_to_float_out(out, volume, boost,
+                                               volume if prev_volume is None else prev_volume,
+                                               render_channels)
+                    prev_volume = volume
+                elif out and (volume != 1.0 or boost != 1.0):
                     out = _apply_local_levels(out, volume, boost)
                 if out:
                     stream.write(out)

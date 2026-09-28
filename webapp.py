@@ -1888,7 +1888,8 @@ def _set_local_volume(percent, name=None):
             # a new dict, never the shared default config's
             config["local_device_volumes"] = {**config.get("local_device_volumes", {}), n: percent / 100.0}
             save_config(config)
-            windows_audio.set_endpoint_volume(n, 100)  # only unmutes: its level is fixed
+            if vol.get("muted"):
+                windows_audio.set_endpoint_volume(n, 100)  # only unmutes: its level is fixed
             continue
         ok, detail = windows_audio.set_endpoint_volume(n, percent)
         if not ok:
