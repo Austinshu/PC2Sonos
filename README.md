@@ -77,8 +77,8 @@ including the scale-everything slider, can change the boost.
 
 **Scale everything together.** The slider at the top of the Sonos card
 turns every enabled Sonos speaker and your PC speakers up or down together.
-Drag it back to 100% and everything returns to exactly where it was. Above
-100% it only raises Sonos, never your PC speakers.
+Drag it back to 100% and everything returns to exactly where it was. Each
+speaker stops at its own 100% maximum, and the boost is never changed by it.
 
 **Stream only some apps (Windows).** Under **Audio source**, click
 **Refresh** and tick the apps you want on Sonos; everything else stays off

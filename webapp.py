@@ -450,7 +450,7 @@ DASHBOARD_HTML = """
     <label style="margin-bottom:6px;">Scale everything together</label>
     <details class="info-toggle">
       <summary>&#9432; How does this work?</summary>
-      <div class="card-desc">Scales every enabled Sonos speaker and the PC speaker volume from wherever they're each set right now (individual volumes below stay fully adjustable afterward). 100% is a no-op. Below 100% turns everything down together, including the PC speaker volume. Above 100% turns Sonos speakers up together (up to 100% each, a Sonos limit) -- but never the PC speaker volume, which only ever moves down through this control. The PC boost under Advanced is never touched by this control, since it carries its own hardware-risk warning that this control shouldn't be able to trigger as a side effect.</div>
+      <div class="card-desc">Scales every enabled Sonos speaker and the PC speaker volume from wherever they're each set right now (individual volumes below stay fully adjustable afterward). 100% is a no-op. Below 100% turns everything down together, including the PC speaker volume. Above 100% turns everything up together, each speaker up to its 100% maximum. The PC boost under Advanced is never touched by this control, since it carries its own hardware-risk warning that this control shouldn't be able to trigger as a side effect.</div>
     </details>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <input type="range" min="0" max="500" step="1" id="masterVolume" value="100"
@@ -1692,10 +1692,9 @@ def api_master_volume():
     the new baseline for next time.
 
     0-500% for Sonos speakers -- no hardware risk there, Sonos enforces
-    its own 100% ceiling per speaker regardless of scale. The PC speaker
-    volume only ever scales DOWN through this control (capped at its
-    baseline, never above 100%): turning it up is the dedicated slider's
-    job. The PC BOOST (Advanced) is not touched at all -- it is the one
+    its own 100% ceiling per speaker regardless of scale. Each PC speaker's
+    volume scales the same way, capped at 100% (a plain volume, no boost).
+    The PC BOOST (Advanced) is not touched at all -- it is the one
     setting that can stress speakers, so nothing that gets dragged around
     casually is allowed to move it; an earlier version that scaled it
     pushed a real boost to its 500% ceiling from a single press."""
@@ -1713,7 +1712,10 @@ def api_master_volume():
             }
 
         scale = percent / 100.0
-        volume_scale = min(1.0, scale)  # PC volume: down only, never above its baseline
+        # PC speakers go up as well as down now (each capped at 100%): their
+        # volume is a plain volume, and the boost is never touched here. Down
+        # only used to leave the slider looking broken when dragged up.
+        volume_scale = scale
         for uid, base_volume in _master_volume_baseline["speakers"].items():
             speaker_mgr.set_volume(uid, round(base_volume * scale))
         new_volume_percent = None

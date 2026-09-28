@@ -455,7 +455,7 @@ try:
     client.post("/api/local_volume", json={"percent": 40})  # no name: every PC speaker
     assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 40
 
-    # the master slider scales each speaker from its OWN level (down only), and restores them at 100
+    # the master slider scales each speaker from its OWN level, and restores them at 100
     _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] = 80
     _fake_endpoints["Headphones (Arctis)"]["percent"] = 100
     webapp._master_volume_baseline = None
@@ -463,7 +463,17 @@ try:
     assert body["local_volume_percent"] == 40
     assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 40
     assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 50
+    # and up: dragging it above 100% used to leave the PC speakers where they
+    # were, so the slider looked broken
+    _fake_endpoints["Headphones (Arctis)"]["percent"] = 100
+    webapp._master_volume_baseline = None
+    _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] = 30
+    client.post("/api/master_volume", json={"percent": 150})
+    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 45
+    assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 100, "capped at 100%"
     client.post("/api/master_volume", json={"percent": 100})
+    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 30
+    _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] = 80
     assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 80
     assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 100
     assert webapp.config["local_volume"] == 1.0
@@ -694,8 +704,8 @@ try:
     assert r.status_code == 200 and r.get_json()["ok"] is True
     assert webapp.config["speakers"]["MV_ON"]["volume"] == 100, \
         "scaling a Sonos speaker up by 500% should still clamp its volume to 100"
-    assert r.get_json()["local_volume_percent"] == 80, \
-        "scaling UP must never raise the PC volume past its 80% baseline"
+    assert r.get_json()["local_volume_percent"] == 100, \
+        "scaling UP raises the PC volume too, capped at 100%"
     assert webapp.config["local_render_gain"] == 2.0, "still no change to the boost"
 
     r = client.post("/api/master_volume", json={"percent": 100})  # back to 100: baseline restored exactly
