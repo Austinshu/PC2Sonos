@@ -502,9 +502,10 @@ DASHBOARD_HTML = """
     <label style="margin-bottom:2px;">Volume</label>
     <details class="info-toggle">
       <summary>&#9432; What does this do?</summary>
-      <div class="card-desc">{% if direct_speaker_volume %}This is your PC speakers' own Windows volume: the same setting as your speakers' entry under Settings &gt; System &gt; Sound, so what you see here is exactly what they're set to. Windows' volume keys and taskbar slider can't reach it while PC2Sonos runs, because they control the virtual cable instead. With more than one PC speaker ticked above, this sets all of them. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top. (If an aux/line-out speaker is still too quiet at 100%, there's a separate boost under Advanced.){% else %}How loud PC2Sonos plays the delayed audio through the device above, on top of your Mac's own volume for it. 100% is the original level and lower turns it down. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top. (If an aux/line-out speaker is still too quiet with that turned up, there's a separate boost under Advanced.){% endif %}</div>
+      <div class="card-desc">{% if direct_speaker_volume %}This is your PC speakers' own Windows volume: the same setting as your speakers' entry under Settings &gt; System &gt; Sound, so what you see here is exactly what they're set to. Windows' volume keys and taskbar slider can't reach it while PC2Sonos runs, because they control the virtual cable instead. With more than one PC speaker ticked above, each one gets its own slider, because headphones and speakers need very different settings. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top. (If an aux/line-out speaker is still too quiet at 100%, there's a separate boost under Advanced.){% else %}How loud PC2Sonos plays the delayed audio through the device above, on top of your Mac's own volume for it. 100% is the original level and lower turns it down. This only affects your PC speakers &mdash; each Sonos speaker has its own volume in the Sonos speakers card at the top. (If an aux/line-out speaker is still too quiet with that turned up, there's a separate boost under Advanced.){% endif %}</div>
     </details>
-    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+    {% if direct_speaker_volume %}<div id="speakerVolumes" style="display:flex; flex-direction:column; gap:8px;"></div>{% endif %}
+    <div style="display:{% if direct_speaker_volume %}none{% else %}flex{% endif %}; align-items:center; gap:10px; flex-wrap:wrap;">
       <input type="range" min="0" max="100" step="1" id="localVolume" value="{{local_volume_percent}}"
              oninput="localVolumeBusy = true; syncLocalVolume('slider')" onchange="setLocalVolume()" style="flex:1; min-width:150px;">
       <input type="number" min="0" max="100" step="1" id="localVolumeNum" value="{{local_volume_percent}}"
@@ -867,12 +868,13 @@ async function applyMasterVolume(){
   // everything back to where it was before you started turning it down
   // (the backend scales from a fixed baseline, not from whatever the
   // last press left things at, so this is always reversible)
-  if (data.local_volume_percent !== undefined && data.local_volume_percent !== null) {
+  if (data.local_volume_percent !== undefined && data.local_volume_percent !== null && !document.getElementById('speakerVolumes')) {
     document.getElementById('localVolume').value = data.local_volume_percent;
     syncLocalVolume('slider');
   }
   el.textContent = 'Set to ' + percent + '% -- individual volumes below are updated.';
   refresh();
+  loadLocalVolume();
 }
 function syncDelay(source){
   const slider = document.getElementById('delay');
@@ -1010,16 +1012,71 @@ async function loadLocalVolume(){
 }
 function showLocalVolume(data){
   const note = document.getElementById('localVolumeNote');
-  if (data.percent !== null && data.percent !== undefined && !localVolumeBusy) {
+  if (data.direct) {
+    showSpeakerVolumes(data.speakers || []);
+  } else if (data.percent !== null && data.percent !== undefined && !localVolumeBusy) {
     document.getElementById('localVolume').value = data.percent;
     syncLocalVolume('slider');
   }
+  const muted = (data.speakers || []).filter(s => s.muted).map(s => s.name);
   let msg = '';
   if (data.error) msg = "Couldn't set it: " + data.error + '.';
-  else if (data.direct && (data.percent === null || data.percent === undefined)) msg = 'Waiting for a PC speaker to start playing.';
-  else if (data.muted) msg = 'Muted in Windows. Moving the slider unmutes it.';
+  else if (data.direct && !(data.speakers || []).length) msg = 'Waiting for a PC speaker to start playing.';
+  else if (muted.length) msg = muted.join(', ') + (muted.length > 1 ? ' are' : ' is') + ' muted in Windows. Moving its slider unmutes it.';
   note.textContent = msg;
   note.style.display = msg ? 'block' : 'none';
+}
+// Windows: one row per PC speaker in use, each its own Windows volume
+function showSpeakerVolumes(speakers){
+  const box = document.getElementById('speakerVolumes');
+  if (!box) return;
+  const names = speakers.map(s => s.name).join('|');
+  if (box.dataset.names !== names) {
+    box.dataset.names = names;
+    box.innerHTML = '';
+    speakers.forEach(s => {
+      const row = document.createElement('div');
+      const label = document.createElement('div');
+      label.style.cssText = 'font-size:13px; color:#aaa; margin-bottom:2px;';
+      label.textContent = s.name;
+      const line = document.createElement('div');
+      line.style.cssText = 'display:flex; align-items:center; gap:10px; flex-wrap:wrap;';
+      const slider = document.createElement('input');
+      slider.type = 'range'; slider.min = 0; slider.max = 100; slider.step = 1;
+      slider.style.cssText = 'flex:1; min-width:150px;';
+      const num = document.createElement('input');
+      num.type = 'number'; num.min = 0; num.max = 100; num.step = 1;
+      num.style.cssText = 'width:70px; padding:4px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;';
+      const pct = document.createElement('span'); pct.textContent = '%';
+      slider.oninput = () => { row.dataset.busy = '1'; num.value = slider.value; paintRange(slider); };
+      num.oninput = () => {
+        row.dataset.busy = '1';
+        let v = parseInt(num.value); if (isNaN(v)) return;
+        slider.value = Math.max(0, Math.min(100, v)); paintRange(slider);
+      };
+      const send = async () => {
+        let data = {};
+        try {
+          const res = await fetch('/api/local_volume', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({name: s.name, percent: parseInt(slider.value)})});
+          data = await res.json();
+        } catch (e) {}
+        delete row.dataset.busy;
+        showLocalVolume(data);
+      };
+      slider.onchange = send; num.onchange = send;
+      line.append(slider, num, pct);
+      row.append(label, line);
+      row.dataset.name = s.name;
+      box.appendChild(row);
+    });
+  }
+  speakers.forEach(s => {
+    const row = Array.from(box.children).find(r => r.dataset.name === s.name);
+    if (!row || row.dataset.busy) return;
+    const [slider, num] = row.querySelectorAll('input');
+    slider.value = s.percent; num.value = s.percent; paintRange(slider);
+  });
 }
 async function setDevice(){
   const list = document.getElementById('renderDeviceList');
@@ -1650,6 +1707,8 @@ def api_master_volume():
             _master_volume_baseline = {
                 "speakers": {s["uid"]: s["volume"] for s in speaker_mgr.list() if s["enabled"]},
                 "local_volume_percent": _get_local_volume()["percent"],
+                # direct (Windows): each PC speaker's own Windows volume
+                "local_volumes": {s["name"]: s["percent"] for s in _get_local_volume()["speakers"]},
             }
 
         scale = percent / 100.0
@@ -1657,7 +1716,13 @@ def api_master_volume():
         for uid, base_volume in _master_volume_baseline["speakers"].items():
             speaker_mgr.set_volume(uid, round(base_volume * scale))
         new_volume_percent = None
-        if _master_volume_baseline["local_volume_percent"] is not None:
+        if _master_volume_baseline["local_volumes"]:
+            for name, base in _master_volume_baseline["local_volumes"].items():
+                pct = max(0, min(100, round(base * volume_scale)))
+                _set_local_volume(pct, name)
+                if new_volume_percent is None:
+                    new_volume_percent = pct
+        elif _master_volume_baseline["local_volume_percent"] is not None:
             new_volume_percent = max(0, min(100, round(_master_volume_baseline["local_volume_percent"] * volume_scale)))
             _set_local_volume(new_volume_percent)
 
@@ -1776,22 +1841,29 @@ def _direct_speaker_volume():
 
 
 def _get_local_volume():
-    """{"percent", "direct", "muted"} for the PC speaker Volume slider.
-    percent is None when it's direct but no PC speaker is playing yet (or
-    Windows won't say), so the dashboard leaves the slider alone."""
+    """{"percent", "direct", "muted", "speakers"} for the PC speaker
+    Volume. Direct (Windows): `speakers` is [{name, percent, muted}], one
+    per PC speaker in use, each with its OWN slider -- a single shared
+    volume was wrong as soon as two outputs were ticked: a level that suits
+    powered desk speakers left a pair of headphones inaudible until near
+    max. `percent` is the first speaker's (None when none is playing yet)."""
     if not _direct_speaker_volume():
-        return {"percent": round(config.get("local_volume", 1.0) * 100), "direct": False, "muted": False}
+        return {"percent": round(config.get("local_volume", 1.0) * 100), "direct": False,
+                "muted": False, "speakers": []}
     import windows_audio
-    vols = [v for v in (windows_audio.get_endpoint_volume(n) for n in get_current_render_device_names())
-            if v is not None]
-    if not vols:
-        return {"percent": None, "direct": True, "muted": False}
-    return {"percent": vols[0]["percent"], "direct": True, "muted": any(v["muted"] for v in vols)}
+    speakers = []
+    for name in get_current_render_device_names():
+        vol = windows_audio.get_endpoint_volume(name)
+        if vol is not None:
+            speakers.append({"name": name, **vol})
+    return {"percent": speakers[0]["percent"] if speakers else None, "direct": True,
+            "muted": any(s["muted"] for s in speakers), "speakers": speakers}
 
 
-def _set_local_volume(percent):
-    """Sets the PC speaker Volume (0-100). Direct: every PC speaker in use
-    goes to that Windows volume, unmuted. Returns (ok, error)."""
+def _set_local_volume(percent, name=None):
+    """Sets the PC speaker Volume (0-100). Direct: the Windows volume of
+    PC speaker `name`, or of every one in use when `name` is None, unmuted.
+    Returns (ok, error)."""
     if not _direct_speaker_volume():
         # digital: read fresh every chunk in the render loop
         config["local_volume"] = percent / 100.0
@@ -1801,8 +1873,12 @@ def _set_local_volume(percent):
     names = get_current_render_device_names()
     if not names:
         return False, "no PC speaker is playing right now"
-    for name in names:
-        ok, detail = windows_audio.set_endpoint_volume(name, percent)
+    if name is not None:
+        if name not in names:
+            return False, f"{name} isn't one of the PC speakers playing right now"
+        names = [name]
+    for n in names:
+        ok, detail = windows_audio.set_endpoint_volume(n, percent)
         if not ok:
             return False, detail
     return True, None
@@ -1815,7 +1891,7 @@ def api_local_volume():
     # _direct_speaker_volume.
     if request.method == "POST":
         data = request.get_json(force=True)
-        ok, error = _set_local_volume(max(0, min(100, int(data.get("percent", 100)))))
+        ok, error = _set_local_volume(max(0, min(100, int(data.get("percent", 100)))), data.get("name"))
         if not ok:
             return jsonify({"ok": False, "error": error, **_get_local_volume()}), 409
     return jsonify({"ok": True, **_get_local_volume()})

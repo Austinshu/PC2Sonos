@@ -431,30 +431,43 @@ try:
 
     webapp.get_current_render_device_names = lambda: ["Speakers (Realtek(R) Audio)", "Headphones (Arctis)"]
     body = client.get("/api/local_volume").get_json()
-    assert body == {"ok": True, "percent": 6, "direct": True, "muted": True}, body
+    assert body["percent"] == 6 and body["direct"] and body["muted"], body
+    assert body["speakers"] == [{"name": "Speakers (Realtek(R) Audio)", "percent": 6, "muted": True},
+                                {"name": "Headphones (Arctis)", "percent": 70, "muted": False}], body
     r = client.get("/")
-    assert b'id="localVolume" value="6"' in r.data, "the slider shows the Windows volume"
-    body = client.post("/api/local_volume", json={"percent": 40}).get_json()
-    assert body["percent"] == 40 and not body["muted"], body
-    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 40
-    assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 40, "every PC speaker in use is set"
-    assert webapp.config["local_volume"] == 1.0, "no digital volume on top of the Windows one"
-    client.post("/api/local_volume", json={"percent": 999})
-    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 100
+    assert b'id="speakerVolumes"' in r.data, "Windows gets one slider per PC speaker"
 
-    # the master slider scales the Windows volume (down only), and restores it at 100
+    # Each PC speaker has its own volume: one shared level suited the desk
+    # speakers and left headphones inaudible until near max.
+    body = client.post("/api/local_volume", json={"name": "Headphones (Arctis)", "percent": 95}).get_json()
+    assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 95
+    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 6, "the other speaker is untouched"
+    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["muted"], "and stays muted"
+    r = client.post("/api/local_volume", json={"name": "CABLE Input (VB-Audio Virtual Cable)", "percent": 50})
+    assert r.status_code == 409, "only a PC speaker in use can be set"
+    client.post("/api/local_volume", json={"name": "Speakers (Realtek(R) Audio)", "percent": 999})
+    assert _fake_endpoints["Speakers (Realtek(R) Audio)"] == {"percent": 100, "muted": False, "db": -39.8}
+    assert webapp.config["local_volume"] == 1.0, "no digital volume on top of the Windows one"
+    client.post("/api/local_volume", json={"percent": 40})  # no name: every PC speaker
+    assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 40
+
+    # the master slider scales each speaker from its OWN level (down only), and restores them at 100
     _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] = 80
+    _fake_endpoints["Headphones (Arctis)"]["percent"] = 100
     webapp._master_volume_baseline = None
     body = client.post("/api/master_volume", json={"percent": 50}).get_json()
-    assert body["local_volume_percent"] == 40 and _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 40
+    assert body["local_volume_percent"] == 40
+    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 40
+    assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 50
     client.post("/api/master_volume", json={"percent": 100})
     assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 80
+    assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 100
     assert webapp.config["local_volume"] == 1.0
 finally:
     webapp._direct_speaker_volume = lambda: False
     webapp.get_current_render_device_names = _real_current
     webapp._master_volume_baseline = None
-print("  /api/local_volume (Windows): the slider is the speakers' own Windows volume OK")
+print("  /api/local_volume (Windows): each PC speaker has its own Windows-volume slider OK")
 
 # An old digital volume is carried into the Windows volume once, with no jump
 # in loudness -- all speakers or none, so none is ever turned down twice.
