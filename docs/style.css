@@ -58,3 +58,13 @@ details p { margin: 8px 0 0; color: var(--muted); }
 footer.site { border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
 footer.site .wrap { padding-top: 20px; padding-bottom: 28px; }
 footer.site a { color: var(--muted); }
+.crumbs { font-size: 14px; color: var(--muted); margin: 0 0 10px; }
+.crumbs a { color: var(--muted); }
+a.card.link { display: block; text-decoration: none; }
+a.card.link:hover { border-color: var(--accent); }
+.table { overflow-x: auto; margin: 18px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--accent); font-weight: 600; }
+nav { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+nav a { margin-left: 0; }

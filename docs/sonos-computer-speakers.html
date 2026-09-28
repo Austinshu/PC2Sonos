@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to use Sonos as computer speakers (Windows and Mac)</title>
+<meta name="description" content="Turn any Sonos speaker into your PC or Mac&#x27;s speakers. Stream games, browser audio, Spotify and system sounds to Sonos with the free PC2Sonos app.">
+<link rel="canonical" href="https://austinshu.github.io/PC2Sonos/sonos-computer-speakers.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="PC2Sonos">
+<meta property="og:title" content="How to use Sonos as computer speakers (Windows and Mac)">
+<meta property="og:description" content="Turn any Sonos speaker into your PC or Mac&#x27;s speakers. Stream games, browser audio, Spotify and system sounds to Sonos with the free PC2Sonos app.">
+<meta property="og:url" content="https://austinshu.github.io/PC2Sonos/sonos-computer-speakers.html">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#000000">
+<link rel="stylesheet" href="style.css?v=6">
+<script type="application/ld+json">{"@context": "https://schema.org", "@graph": [{"@type": "Article", "headline": "How to use Sonos as your computer's speakers", "description": "Turn any Sonos speaker into your PC or Mac's speakers. Stream games, browser audio, Spotify and system sounds to Sonos with the free PC2Sonos app.", "url": "https://austinshu.github.io/PC2Sonos/sonos-computer-speakers.html", "dateModified": "2026-09-28", "publisher": {"@type": "Organization", "name": "PC2Sonos", "url": "https://austinshu.github.io/PC2Sonos/"}, "about": {"@type": "SoftwareApplication", "name": "PC2Sonos", "url": "https://austinshu.github.io/PC2Sonos/"}}, {"@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home", "item": "https://austinshu.github.io/PC2Sonos/"}, {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://austinshu.github.io/PC2Sonos/guides.html"}, {"@type": "ListItem", "position": 3, "name": "Use Sonos as computer speakers", "item": "https://austinshu.github.io/PC2Sonos/sonos-computer-speakers.html"}]}]}</script>
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="index.html">PC2Sonos</a>
+  <nav><a href="index.html">Home</a><a href="download.html">Download</a><a href="windows.html">Windows</a><a href="mac.html">Mac</a><a href="guides.html" aria-current="page">Guides</a><a href="faq.html">FAQ</a></nav>
+</div></header>
+<main><div class="wrap">
+<p class="crumbs"><a href="index.html">Home</a> / <a href="guides.html">Guides</a> / Use Sonos as computer speakers</p>
+<h1>How to use Sonos as your computer&#x27;s speakers</h1>
+<p class="lead">Sonos has no setting for "be my computer's speakers". The Sonos app plays music services, not your computer's own sound. PC2Sonos fills that gap: whatever your Windows PC or Mac plays goes to the Sonos speakers you pick.</p>
+
+<div class="buttons">
+  <a class="btn" id="dl" href="download.html">Download free</a>
+  <a class="btn secondary" href="https://github.com/Austinshu/PC2Sonos">View on GitHub</a>
+</div>
+<p class="note" id="dlnote">Windows 10 or newer, macOS 12 or newer. No account needed.</p>
+<script>
+(function () {
+  var ua = navigator.userAgent || "", btn = document.getElementById("dl"), note = document.getElementById("dlnote");
+  if (/Windows/i.test(ua)) {
+    btn.href = "https://github.com/Austinshu/PC2Sonos/releases/latest/download/PC2Sonos-Setup.exe"; btn.textContent = "Download for Windows";
+    note.innerHTML = 'Free for Windows 10 and 11. On a Mac? <a href="download.html">Get the Mac version</a>.';
+  } else if (/Macintosh|Mac OS X/i.test(ua)) {
+    btn.href = "download.html#mac"; btn.textContent = "Download for Mac";
+  }
+})();
+</script>
+
+<h2>What you can play</h2>
+<p>Everything your computer makes a sound with: a browser tab, Spotify or Apple Music on the desktop, games, video calls, system sounds. You can also stream just the apps you choose on Windows 10 21H2 or newer, so notification sounds stay on your PC.</p>
+
+<h2>Setup in three steps</h2>
+<ol class="steps">
+  <li><strong>Install PC2Sonos.</strong> The <a href="windows.html">Windows installer</a> adds the free VB-Audio Virtual Cable. The <a href="mac.html">Mac app</a> uses the free BlackHole driver.</li>
+  <li><strong>Turn on your speakers.</strong> The dashboard opens in your browser and lists every Sonos on your network. Turn on the ones you want, each with its own volume.</li>
+  <li><strong>Play something.</strong> That's it. PC2Sonos starts by itself at login from then on.</li>
+</ol>
+
+<h2>Sonos only, or Sonos plus your desk speakers</h2>
+<p>If Sonos is your only speaker, leave your PC speakers off. If you want both, PC2Sonos delays your desk speakers or headphones to match Sonos, so the two don't <a href="sonos-pc-speaker-echo.html">echo</a>. You can pick more than one PC output, and each gets its own volume slider.</p>
+
+<h2>Volume control</h2>
+<p>While PC2Sonos runs, your keyboard's volume keys control the virtual driver, so volume lives on the dashboard. Each Sonos has its own slider, and one "scale everything" slider turns every speaker up or down together. There's also a bass, mid and treble EQ and a boost for quiet PC speakers.</p>
+
+<h2>A heads-up about video</h2>
+<p>Sonos plays a second or two behind any source, and nothing can remove that. Music, podcasts and background audio are fine. For watching video on the computer screen, sound through Sonos will trail the picture.</p>
+
+<p><a href="download.html">Download PC2Sonos</a> · <a href="ways-to-play-pc-audio-on-sonos.html">Other ways to do it</a> · <a href="faq.html">FAQ</a></p>
+</div></main>
+<footer class="site"><div class="wrap">
+  PC2Sonos is free and open source. <a href="https://github.com/Austinshu/PC2Sonos">Source on GitHub</a> ·
+  <a href="https://github.com/Austinshu/PC2Sonos/releases">Release notes</a> ·
+  <a href="guides.html">Guides</a> ·
+  <a href="https://buy.stripe.com/eVq7sF9Iv4LjfeM4JScbC01">Support the project</a><br>
+  PC2Sonos is an independent project and isn't affiliated with or endorsed by Sonos, Inc.
+</div></footer>
+</body>
+</html>

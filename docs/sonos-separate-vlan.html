@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stream PC audio to Sonos on a separate VLAN or subnet</title>
+<meta name="description" content="Sonos on an IoT VLAN or another subnet won&#x27;t show up for most apps. PC2Sonos can reach them from one IP address. Setup and firewall notes.">
+<link rel="canonical" href="https://austinshu.github.io/PC2Sonos/sonos-separate-vlan.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="PC2Sonos">
+<meta property="og:title" content="Stream PC audio to Sonos on a separate VLAN or subnet">
+<meta property="og:description" content="Sonos on an IoT VLAN or another subnet won&#x27;t show up for most apps. PC2Sonos can reach them from one IP address. Setup and firewall notes.">
+<meta property="og:url" content="https://austinshu.github.io/PC2Sonos/sonos-separate-vlan.html">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#000000">
+<link rel="stylesheet" href="style.css?v=6">
+<script type="application/ld+json">{"@context": "https://schema.org", "@graph": [{"@type": "Article", "headline": "Stream to Sonos speakers on a separate VLAN or subnet", "description": "Sonos on an IoT VLAN or another subnet won't show up for most apps. PC2Sonos can reach them from one IP address. Setup and firewall notes.", "url": "https://austinshu.github.io/PC2Sonos/sonos-separate-vlan.html", "dateModified": "2026-09-28", "publisher": {"@type": "Organization", "name": "PC2Sonos", "url": "https://austinshu.github.io/PC2Sonos/"}, "about": {"@type": "SoftwareApplication", "name": "PC2Sonos", "url": "https://austinshu.github.io/PC2Sonos/"}}, {"@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home", "item": "https://austinshu.github.io/PC2Sonos/"}, {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://austinshu.github.io/PC2Sonos/guides.html"}, {"@type": "ListItem", "position": 3, "name": "Separate VLAN", "item": "https://austinshu.github.io/PC2Sonos/sonos-separate-vlan.html"}]}]}</script>
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="index.html">PC2Sonos</a>
+  <nav><a href="index.html">Home</a><a href="download.html">Download</a><a href="windows.html">Windows</a><a href="mac.html">Mac</a><a href="guides.html" aria-current="page">Guides</a><a href="faq.html">FAQ</a></nav>
+</div></header>
+<main><div class="wrap">
+<p class="crumbs"><a href="index.html">Home</a> / <a href="guides.html">Guides</a> / Separate VLAN</p>
+<h1>Stream to Sonos speakers on a separate VLAN or subnet</h1>
+<p class="lead">Putting Sonos on its own IoT network is good practice, but it breaks automatic discovery. PC2Sonos can still reach them if you give it one speaker's IP address.</p>
+
+<h2>Why the speakers don't show up</h2>
+<p>Apps find Sonos by sending a discovery broadcast on your local network. Routers don't pass those broadcasts between VLANs or subnets unless you set up a multicast relay, so speakers on another network stay invisible.</p>
+
+<h2>The fix</h2>
+<ol class="steps">
+  <li>Find the IP address of any one Sonos speaker, from your router's device list or the Sonos app's About screen.</li>
+  <li>In the PC2Sonos dashboard, open <strong>Speakers not showing up?</strong> and type that address.</li>
+  <li>PC2Sonos connects to that speaker directly and finds the rest of your system from it.</li>
+</ol>
+
+<div class="buttons">
+  <a class="btn" id="dl" href="download.html">Download free</a>
+  <a class="btn secondary" href="https://github.com/Austinshu/PC2Sonos">View on GitHub</a>
+</div>
+<p class="note" id="dlnote">Windows 10 or newer, macOS 12 or newer. No account needed.</p>
+<script>
+(function () {
+  var ua = navigator.userAgent || "", btn = document.getElementById("dl"), note = document.getElementById("dlnote");
+  if (/Windows/i.test(ua)) {
+    btn.href = "https://github.com/Austinshu/PC2Sonos/releases/latest/download/PC2Sonos-Setup.exe"; btn.textContent = "Download for Windows";
+    note.innerHTML = 'Free for Windows 10 and 11. On a Mac? <a href="download.html">Get the Mac version</a>.';
+  } else if (/Macintosh|Mac OS X/i.test(ua)) {
+    btn.href = "download.html#mac"; btn.textContent = "Download for Mac";
+  }
+})();
+</script>
+
+<h2>Firewall rules to check</h2>
+<p>Your computer and the speakers need to reach each other in both directions. Sonos is controlled from the computer, and each speaker then pulls the audio stream from PC2Sonos running on your computer. If speakers appear but stay silent, allow the Sonos network to open connections to your computer. The Windows installer adds the local firewall rules; the router rules between networks are up to you.</p>
+
+<h2>Faster start after a reboot</h2>
+<p>Give your main speaker a fixed address (a DHCP reservation) and click the star next to it in the dashboard. PC2Sonos then connects to it straight away at login instead of scanning.</p>
+
+<p><a href="faq.html">FAQ</a> · <a href="download.html">Download</a></p>
+</div></main>
+<footer class="site"><div class="wrap">
+  PC2Sonos is free and open source. <a href="https://github.com/Austinshu/PC2Sonos">Source on GitHub</a> ·
+  <a href="https://github.com/Austinshu/PC2Sonos/releases">Release notes</a> ·
+  <a href="guides.html">Guides</a> ·
+  <a href="https://buy.stripe.com/eVq7sF9Iv4LjfeM4JScbC01">Support the project</a><br>
+  PC2Sonos is an independent project and isn't affiliated with or endorsed by Sonos, Inc.
+</div></footer>
+</body>
+</html>
