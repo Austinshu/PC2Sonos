@@ -1038,7 +1038,8 @@ function showSpeakerVolumes(speakers){
       const row = document.createElement('div');
       const label = document.createElement('div');
       label.style.cssText = 'font-size:13px; color:#aaa; margin-bottom:2px;';
-      label.textContent = s.name;
+      label.textContent = s.name + (s.adjustable === false
+        ? " (Windows can't change this one's volume, so PC2Sonos does; the device's own knob still works too)" : '');
       const line = document.createElement('div');
       line.style.cssText = 'display:flex; align-items:center; gap:10px; flex-wrap:wrap;';
       const slider = document.createElement('input');
@@ -1854,8 +1855,12 @@ def _get_local_volume():
     speakers = []
     for name in get_current_render_device_names():
         vol = windows_audio.get_endpoint_volume(name)
-        if vol is not None:
-            speakers.append({"name": name, **vol})
+        if vol is None:
+            continue
+        if not vol.get("adjustable", True):
+            # Windows can't change this one: PC2Sonos's own volume for it
+            vol = {**vol, "percent": round(config.get("local_device_volumes", {}).get(name, 1.0) * 100)}
+        speakers.append({"name": name, **vol})
     return {"percent": speakers[0]["percent"] if speakers else None, "direct": True,
             "muted": any(s["muted"] for s in speakers), "speakers": speakers}
 
@@ -1878,6 +1883,13 @@ def _set_local_volume(percent, name=None):
             return False, f"{name} isn't one of the PC speakers playing right now"
         names = [name]
     for n in names:
+        vol = windows_audio.get_endpoint_volume(n)
+        if vol is not None and not vol.get("adjustable", True):
+            # a new dict, never the shared default config's
+            config["local_device_volumes"] = {**config.get("local_device_volumes", {}), n: percent / 100.0}
+            save_config(config)
+            windows_audio.set_endpoint_volume(n, 100)  # only unmutes: its level is fixed
+            continue
         ok, detail = windows_audio.set_endpoint_volume(n, percent)
         if not ok:
             return False, detail

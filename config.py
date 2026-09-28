@@ -133,6 +133,11 @@ DEFAULT_CONFIG = {
     # the audio at its original level; lower turns it down. Sonos speakers
     # have their own independent volumes (config['speakers'][uid]).
     "local_volume": 1.0,
+    # Windows: PC2Sonos's own volume (0-1) for a PC speaker whose Windows
+    # volume can't be changed (see windows_audio.get_endpoint_volume),
+    # keyed by device name. Every other PC speaker's volume is its Windows
+    # volume, so it isn't kept here.
+    "local_device_volumes": {},
     # BOOST for the local path, 1.0-5.0 (Advanced on the dashboard): for an
     # aux/line-out speaker that's too quiet even at full volume. 1.0 (the
     # default) = no boost. It multiplies local_volume, and is deliberately

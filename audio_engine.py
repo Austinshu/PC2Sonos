@@ -1324,7 +1324,8 @@ def _render_session(stop_event, device_substr):
             # for them. Boost then volume are applied (see
             # _apply_local_levels) here, after resampling, right before the
             # device write.
-            volume = config.get("local_volume", 1.0)
+            volume = config.get("local_volume", 1.0) * \
+                config.get("local_device_volumes", {}).get(info["name"], 1.0)
             boost = max(1.0, config.get("local_render_gain", 1.0))
             bass_db = config.get("local_eq_bass_db", 0.0)
             mid_db = config.get("local_eq_mid_db", 0.0)
@@ -1442,18 +1443,26 @@ def fold_local_volume_into_windows():
         names.append(info["name"])
     # all or nothing: a speaker lowered in Windows while the digital volume
     # still applies (because another one failed) would be turned down twice
-    missing = [n for n in names if windows_audio.get_endpoint_volume(n) is None]
+    vols = {n: windows_audio.get_endpoint_volume(n) for n in names}
+    missing = [n for n, v in vols.items() if v is None]
     if missing:
         print(f"[audio] PC speaker volume: can't read the Windows volume of {', '.join(missing)}; "
               f"keeping the {round(volume * 100)}% digital volume for now")
         return
+    # a device Windows can't turn down keeps the level as PC2Sonos's own
+    # volume for that device instead
+    device_volumes = dict(config.get("local_device_volumes", {}))
     for name in names:
+        if not vols[name].get("adjustable", True):
+            device_volumes[name] = device_volumes.get(name, 1.0) * volume
+            continue
         ok, detail = windows_audio.fold_gain_into_endpoint(name, volume)
         if not ok:
             print(f"[audio] PC speaker volume: couldn't move {round(volume * 100)}% into "
                   f"{name}'s Windows volume ({detail}); keeping it digital for now")
             return
     config["local_volume"] = 1.0
+    config["local_device_volumes"] = device_volumes
     from config import save_config
     save_config(config)
     print(f"[audio] PC speaker volume: moved the {round(volume * 100)}% digital volume into the "

@@ -336,11 +336,14 @@ import windows_audio  # noqa: E402
 webapp.app.testing = True
 _fake_endpoints = {}  # name -> {"percent", "muted", "db"}
 windows_audio.get_endpoint_volume = lambda name: (
-    {k: _fake_endpoints[name][k] for k in ("percent", "muted")} if name in _fake_endpoints else None)
+    {"percent": _fake_endpoints[name]["percent"], "muted": _fake_endpoints[name]["muted"],
+     "adjustable": _fake_endpoints[name].get("adjustable", True)} if name in _fake_endpoints else None)
 def _fake_set_endpoint_volume(name, percent):
     if name not in _fake_endpoints:
         return False, f"no active playback device named '{name}'"
-    _fake_endpoints[name].update(percent=percent, muted=False)
+    if _fake_endpoints[name].get("adjustable", True):
+        _fake_endpoints[name]["percent"] = percent
+    _fake_endpoints[name]["muted"] = False
     return True, name
 windows_audio.set_endpoint_volume = _fake_set_endpoint_volume
 def _fake_fold(name, gain):
@@ -432,8 +435,8 @@ try:
     webapp.get_current_render_device_names = lambda: ["Speakers (Realtek(R) Audio)", "Headphones (Arctis)"]
     body = client.get("/api/local_volume").get_json()
     assert body["percent"] == 6 and body["direct"] and body["muted"], body
-    assert body["speakers"] == [{"name": "Speakers (Realtek(R) Audio)", "percent": 6, "muted": True},
-                                {"name": "Headphones (Arctis)", "percent": 70, "muted": False}], body
+    assert body["speakers"] == [{"name": "Speakers (Realtek(R) Audio)", "percent": 6, "muted": True, "adjustable": True},
+                                {"name": "Headphones (Arctis)", "percent": 70, "muted": False, "adjustable": True}], body
     r = client.get("/")
     assert b'id="speakerVolumes"' in r.data, "Windows gets one slider per PC speaker"
 
@@ -463,6 +466,18 @@ try:
     assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 80
     assert _fake_endpoints["Headphones (Arctis)"]["percent"] == 100
     assert webapp.config["local_volume"] == 1.0
+
+    # A headset whose volume Windows can't change (the Arctis Nova Pro reports a
+    # fixed 0dB) gets PC2Sonos's own volume for that device instead.
+    _fake_endpoints["Headphones (Arctis)"] = {"percent": 100, "muted": True, "db": 0.0, "adjustable": False}
+    webapp.config["local_device_volumes"] = {}
+    body = client.get("/api/local_volume").get_json()
+    assert body["speakers"][1] == {"name": "Headphones (Arctis)", "percent": 100, "muted": True, "adjustable": False}, body
+    body = client.post("/api/local_volume", json={"name": "Headphones (Arctis)", "percent": 35}).get_json()
+    assert webapp.config["local_device_volumes"] == {"Headphones (Arctis)": 0.35}
+    assert body["speakers"][1]["percent"] == 35 and not body["speakers"][1]["muted"], body
+    assert _fake_endpoints["Speakers (Realtek(R) Audio)"]["percent"] == 80, "the other speaker is untouched"
+    webapp.config["local_device_volumes"] = {}
 finally:
     webapp._direct_speaker_volume = lambda: False
     webapp.get_current_render_device_names = _real_current
@@ -483,6 +498,26 @@ try:
     assert audio_engine.config["local_volume"] == 1.0
     audio_engine.fold_local_volume_into_windows()  # nothing left to carry: a no-op
     assert abs(_fake_endpoints["Speakers (Realtek(R) Audio)"]["db"] - (-22.34)) < 0.01
+
+    # a fixed-volume headset keeps the level as its own PC2Sonos volume instead
+    audio_engine._active_device_substrs = lambda: ["Speakers (Realtek", "Headphones"]
+    _real_find0 = audio_engine.find_device_index
+    audio_engine.find_device_index = lambda substr, want_input=False: (
+        (2, {"name": "Speakers (Realtek(R) Audio)"}) if "Realtek" in substr else (4, {"name": "Headphones (Arctis)"}))
+    try:
+        _fake_endpoints["Speakers (Realtek(R) Audio)"]["db"] = 0.0
+        _fake_endpoints["Headphones (Arctis)"] = {"percent": 100, "muted": False, "db": 0.0, "adjustable": False}
+        audio_engine.config["local_volume"] = 0.01
+        audio_engine.config["local_device_volumes"] = {}
+        audio_engine.fold_local_volume_into_windows()
+        assert abs(_fake_endpoints["Speakers (Realtek(R) Audio)"]["db"] - (-40.0)) < 0.01
+        assert _fake_endpoints["Headphones (Arctis)"]["db"] == 0.0, "never folded into a fixed device"
+        assert audio_engine.config["local_device_volumes"] == {"Headphones (Arctis)": 0.01}
+        assert audio_engine.config["local_volume"] == 1.0
+    finally:
+        audio_engine.find_device_index = _real_find0
+        audio_engine.config["local_device_volumes"] = {}
+        _fake_endpoints.pop("Headphones (Arctis)", None)
 
     # a second, unreadable speaker: nothing is touched, the digital volume stays
     audio_engine._active_device_substrs = lambda: ["Speakers (Realtek", "Microphone (USB Audio"]

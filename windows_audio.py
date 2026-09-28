@@ -193,16 +193,20 @@ def _render_endpoint_volume(name):
 
 
 def get_endpoint_volume(name):
-    """{"percent": 0-100, "muted": bool} for the playback device `name` --
-    the number Windows' own volume slider shows -- or None if it can't be
-    found or read."""
+    """{"percent": 0-100, "muted": bool, "adjustable": bool} for the
+    playback device `name` -- the number Windows' own volume slider shows --
+    or None if it can't be found or read. `adjustable` is False for a device
+    whose volume Windows can't actually change (its range is a single
+    level): some USB/wireless headsets, e.g. the SteelSeries Arctis Nova Pro,
+    report a fixed 0dB and are turned up and down only on the headset."""
     try:
         with _com():
             vol = _render_endpoint_volume(name)
             if vol is None:
                 return None
+            lo, hi, _ = vol.GetVolumeRange()
             return {"percent": round(vol.GetMasterVolumeLevelScalar() * 100),
-                    "muted": bool(vol.GetMute())}
+                    "muted": bool(vol.GetMute()), "adjustable": hi > lo}
     except Exception:
         return None
 
