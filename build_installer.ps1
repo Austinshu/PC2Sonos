@@ -55,11 +55,12 @@ if (Test-Path $cableZip) {
     Expand-Archive -Path $cableZip -DestinationPath "$Root\payload\VBCABLE" -Force
 } elseif (Test-Path $installedCableSetup) {
     # No fresh driver pack zip on hand, but this machine already has VB-CABLE
-    # installed -- VBCABLE_Setup_x64.exe is the only payload file this
-    # project's code ever runs (see setup_installer.install_cable_driver),
-    # so the copy already on disk here works exactly the same as one freshly
-    # unzipped from vb-audio.com.
+    # installed. Only VBCABLE_Setup_x64.exe survives an install, though: the
+    # driver files it installs from (.sys/.cat) are NOT in Program Files, so
+    # an installer built this way can't install VB-CABLE on a PC that doesn't
+    # already have it. Fine for testing on a machine that does; never ship it.
     Write-Host "  VBCABLE_Driver_Pack45.zip not in Downloads -- using the driver already installed on this machine instead"
+    Write-Host "  WARNING: this installer can't install VB-CABLE on a new PC (no driver files). Test builds only -- don't release it." -ForegroundColor Yellow
     Copy-Item $installedCableSetup (Join-Path "$Root\payload\VBCABLE" "VBCABLE_Setup_x64.exe") -Force
 } else {
     Write-Host "VBCABLE_Driver_Pack45.zip not found in Downloads, and VB-CABLE isn't installed on this machine either." -ForegroundColor Red
