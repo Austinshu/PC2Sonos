@@ -664,7 +664,7 @@ DASHBOARD_HTML = """
       </div>
       <details class="info-toggle">
         <summary>&#9432; How does this work?</summary>
-        <div class="card-desc">An app only shows up here once it's made some sound since PC2Sonos started (or since the last Refresh). Windows can't always capture a specific app this way &mdash; copy-protected playback and some elevated apps aren't capturable regardless. Check one or more apps to mix just those into the Sonos stream, or leave none checked to send everything.</div>
+        <div class="card-desc">An app only shows up here once it's made some sound since PC2Sonos started (or since the last Refresh). Windows can't always capture a specific app this way &mdash; copy-protected playback and some elevated apps aren't capturable regardless. Tick one or more apps to mix just those into the Sonos stream (that turns off "Whole system"), or tick "Whole system" to send everything again. Press Refresh after opening an app.</div>
       </details>
       <label style="display:flex; align-items:center; gap:8px; font-weight:400; font-size:13px; padding:4px 0;">
         <input type="checkbox" id="captureWholeSystem" onchange="onWholeSystemToggle()">
@@ -1091,7 +1091,15 @@ async function loadAudioSessions(){
   const selected = new Set(data.mode === 'apps' ? data.targets : []);
   const list = document.getElementById('captureAppList');
   list.innerHTML = '';
-  data.sessions.forEach(s => {
+  // PC2Sonos's own session is its PC speaker output, never a source
+  const sessions = data.sessions.filter(s => s.name.toLowerCase() !== 'pc2sonos.exe');
+  if (!sessions.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:12px; color:#888; padding:2px 0;';
+    empty.textContent = 'No apps have played sound yet. Play something, then press Refresh.';
+    list.appendChild(empty);
+  }
+  sessions.forEach(s => {
     const row = document.createElement('label');
     row.style.cssText = 'display:flex; align-items:center; gap:8px; font-weight:400; font-size:13px; padding:2px 0;';
     const cb = document.createElement('input');
@@ -1105,15 +1113,21 @@ async function loadAudioSessions(){
   });
   const wholeCb = document.getElementById('captureWholeSystem');
   wholeCb.checked = selected.size === 0;
-  list.style.display = wholeCb.checked ? 'none' : 'flex';
 }
 function onWholeSystemToggle(){
   const wholeCb = document.getElementById('captureWholeSystem');
   const list = document.getElementById('captureAppList');
+  const anyApp = list.querySelector('input[type=checkbox]:checked');
+  if (!wholeCb.checked && !anyApp) {
+    // unticking it with no app picked would send nothing: stay on whole
+    // system and point at the list instead
+    wholeCb.checked = true;
+    document.getElementById('captureSourceResult').textContent = 'Tick one or more apps below to send only those.';
+    return;
+  }
   if (wholeCb.checked) {
     list.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
   }
-  list.style.display = wholeCb.checked ? 'none' : 'flex';
   setCaptureSource();
 }
 async function setCaptureSource(){
@@ -1121,9 +1135,8 @@ async function setCaptureSource(){
   const wholeCb = document.getElementById('captureWholeSystem');
   const list = document.getElementById('captureAppList');
   const checked = Array.from(list.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.value);
-  if (checked.length > 0) wholeCb.checked = false;  // picking an app implicitly turns off "whole system"
-  const targets = wholeCb.checked ? [] : checked;
-  list.style.display = wholeCb.checked ? 'none' : 'flex';
+  wholeCb.checked = checked.length === 0;  // picking an app turns off "whole system"; unpicking the last turns it back on
+  const targets = checked;
   el.textContent = 'Switching...';
   const res = await fetch('/api/capture_source', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({mode: targets.length ? 'apps' : 'system', targets})});
