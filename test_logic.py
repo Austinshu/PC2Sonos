@@ -634,6 +634,25 @@ assert _np_lv.abs(_np_lv.frombuffer(audio_engine._levels_to_float_out(_loud_musi
                                     dtype=_np_lv.float32)).max() <= 1.0, "boost still soft-limited"
 print("  PC speaker output is float with a ramped volume (no static at low levels, no clicks) OK")
 
+# A big EQ boost used to be limited inside the EQ, before the volume: +11dB of
+# bass on loud music put ~5% of samples through the limiter (heard as static)
+# even with the volume at 19%. In float it gets headroom and is only limited
+# if it's still over full scale after the volume.
+_t = _np_lv.arange(48000) / 48000.0
+_bassy = (_np_lv.sin(2 * _np_lv.pi * 60 * _t) * 0.7 * 32767).astype(_np_lv.int16)
+_bassy = _np_lv.repeat(_bassy, 2).tobytes()
+_eqf = audio_engine._ThreeBandEQ(48000, 2)
+_boosted_f = _np_lv.concatenate([_eqf.process_float(_bassy[i:i + 4096], 11.0, 0.0, 0.0)
+                                 for i in range(0, len(_bassy), 4096)])
+assert _np_lv.abs(_boosted_f).max() > 1.5, "the float EQ leaves the boost unlimited"
+_quiet_out = _np_lv.frombuffer(audio_engine._levels_to_float_out(_boosted_f, 0.19, 1.0, 0.19, 2), dtype=_np_lv.float32)
+assert _np_lv.abs(_quiet_out - _boosted_f * 0.19).max() < 1e-6, "at 19% the boost fits: nothing limited"
+_loud_out = _np_lv.frombuffer(audio_engine._levels_to_float_out(_boosted_f, 1.0, 1.0, 1.0, 2), dtype=_np_lv.float32)
+assert _np_lv.abs(_loud_out).max() <= 1.0, "at 100% it's still soft-limited, never clipped"
+_flat = audio_engine._ThreeBandEQ(48000, 2).process_float(_bassy[:4096], 0.0, 0.0, 0.0)
+assert _np_lv.array_equal(_flat, _np_lv.frombuffer(_bassy[:4096], dtype=_np_lv.int16) / _np_lv.float32(32768.0))
+print("  EQ boosts get headroom and are only limited if still over after the volume OK")
+
 # an old config had ONE gain (0-500%); a value below 100% was volume, above was boost
 _m = {**_cfgmod.DEFAULT_CONFIG, "local_render_gain": 0.5}
 _cfgmod._migrate_local_volume({"local_render_gain": 0.5}, _m)

@@ -910,7 +910,10 @@ class _NoRenderDevice(Exception):
 _GAIN_KNEE = 0.7  # start compressing at 70% of full scale (~ -3dBFS)
 
 
-def _soft_limit(normalized):
+_OUTPUT_KNEE = 0.95  # the float output stage's last-resort limiter (see _levels_to_float_out)
+
+
+def _soft_limit(normalized, knee=None):
     """normalized: a float array of samples roughly in [-1, 1] but
     possibly well beyond it (e.g. after a large gain or EQ boost).
     Returns a float array softly compressed back toward [-1, 1] instead
@@ -937,13 +940,14 @@ def _soft_limit(normalized):
     below never actually reaches 1.0 for any finite input, so it keeps
     differentiating samples (and therefore keeps sounding like
     compression, not a flat top) even at extreme gain."""
+    knee = _GAIN_KNEE if knee is None else knee
     mag = np.abs(normalized)
-    over = mag > _GAIN_KNEE
+    over = mag > knee
     out = np.array(normalized, copy=True)
     if np.any(over):
-        width = 1.0 - _GAIN_KNEE
-        excess = mag[over] - _GAIN_KNEE
-        compressed = _GAIN_KNEE + (excess / (excess + width)) * width
+        width = 1.0 - knee
+        excess = mag[over] - knee
+        compressed = knee + (excess / (excess + width)) * width
         out[over] = np.sign(normalized[over]) * compressed
     return np.clip(out, -1.0, 1.0)
 
@@ -969,10 +973,13 @@ def _apply_local_levels(pcm_bytes, volume, boost):
     return np.clip(samples, -32768, 32767).astype(np.int16).tobytes()
 
 
-def _levels_to_float_out(pcm_bytes, volume, boost, prev_volume, channels):
+def _levels_to_float_out(pcm, volume, boost, prev_volume, channels):
     """_apply_local_levels, but producing 32-bit float output (for a render
     stream opened as paFloat32) with the volume ramped smoothly from
-    `prev_volume` to `volume` across the chunk.
+    `prev_volume` to `volume` across the chunk. `pcm` is 16-bit bytes, or
+    float32 samples straight from _ThreeBandEQ.process_float, which may go
+    past full scale: those are only limited if they're still over after the
+    volume, so an EQ boost with the volume turned down stays clean.
 
     Float because a digital volume applied to 16-bit output throws away
     resolution: at 6% only about 12 of the 16 bits are left, and with the
@@ -981,7 +988,10 @@ def _levels_to_float_out(pcm_bytes, volume, boost, prev_volume, channels):
     quantization is audible as static. Windows mixes in float anyway, so
     handing it float loses nothing. The ramp stops a volume change from
     stepping mid-waveform, which clicks."""
-    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    if isinstance(pcm, (bytes, bytearray)):
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    else:
+        samples = np.asarray(pcm, dtype=np.float32)
     if boost > 1.0:
         samples = _soft_limit(samples * boost)
     if volume != 1.0 or prev_volume != 1.0:
@@ -991,7 +1001,13 @@ def _levels_to_float_out(pcm_bytes, volume, boost, prev_volume, channels):
             samples = (samples[:frames * channels].reshape(frames, channels) * ramp[:, None]).reshape(-1)
         else:
             samples = samples * volume
-    return np.clip(samples, -1.0, 1.0).astype(np.float32).tobytes()
+    # the only limiting an EQ boost gets, and only in a chunk that would
+    # otherwise clip -- with a knee just under full scale, so everything
+    # that fits passes untouched (and the edge between a limited chunk and
+    # the next can't step by more than a hair)
+    if np.abs(samples).max(initial=0.0) > 1.0:
+        samples = _soft_limit(samples, knee=_OUTPUT_KNEE)
+    return samples.astype(np.float32).tobytes()
 
 
 def _apply_local_gain(pcm_bytes, gain):
@@ -1180,19 +1196,31 @@ class _ThreeBandEQ:
             self._hist = self._hist[len(self._hist) - need:]
         self._last = (bass_db, mid_db, treble_db)
 
-    def process(self, pcm_bytes, bass_db, mid_db, treble_db):
+    def process_float(self, pcm_bytes, bass_db, mid_db, treble_db):
+        """process(), but returning float32 samples (full scale = 1.0) that
+        are NOT limited: a band boost can take them past 1.0, and it's left
+        to the output stage to limit only if the final level (after the PC
+        speaker volume) would really exceed full scale. Limiting here
+        instead meant a +11dB bass boost on ordinary music pushed ~5% of all
+        samples through the limiter -- audible as crackle/static -- even
+        with the volume turned right down, where there was plenty of room."""
+        return self.process(pcm_bytes, bass_db, mid_db, treble_db, limit=False)
+
+    def process(self, pcm_bytes, bass_db, mid_db, treble_db, limit=True):
         if bass_db == 0.0 and mid_db == 0.0 and treble_db == 0.0:
             # flat -- skip the work, and start from silence when it is next
             # switched on rather than filtering audio from long ago
             self._hist = np.zeros((0, self.channels))
             self._last = (0.0, 0.0, 0.0)
+            if not limit:
+                return np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             return pcm_bytes
         if (bass_db, mid_db, treble_db) != self._last:
             self._update(bass_db, mid_db, treble_db)
         arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float64)
         frames = len(arr) // self.channels
         if frames == 0:
-            return b""
+            return b"" if limit else np.zeros(0, dtype=np.float32)
         x = arr[:frames * self.channels].reshape(frames, self.channels)
         taps = len(self._ir)
         seg = np.concatenate([self._hist, x], axis=0)
@@ -1203,6 +1231,8 @@ class _ThreeBandEQ:
         filtered = np.fft.irfft(np.fft.rfft(seg, size, axis=0) * spectrum[:, None], size, axis=0)
         out = filtered[taps - 1:taps - 1 + frames]
         self._hist = seg[len(seg) - (taps - 1):]
+        if not limit:
+            return (out / 32768.0).astype(np.float32).reshape(-1)
         # soft-limit, not hard-clip: a large boost on one band can push
         # samples well past full scale on its own, and a hard clip here
         # would introduce harsh distortion before the gain stage's own
@@ -1403,15 +1433,16 @@ def _render_session(stop_event, device_substr):
                     out, resample_state = audioop.ratecv(
                         out, sample_width, render_channels,
                         capture_rate, render_rate, resample_state)
-                if out:
-                    out = eq.process(out, bass_db, mid_db, treble_db)
                 if out and float_out:
-                    out = _levels_to_float_out(out, volume, boost,
+                    out = _levels_to_float_out(eq.process_float(out, bass_db, mid_db, treble_db),
+                                               volume, boost,
                                                volume if prev_volume is None else prev_volume,
                                                render_channels)
                     prev_volume = volume
-                elif out and (volume != 1.0 or boost != 1.0):
-                    out = _apply_local_levels(out, volume, boost)
+                elif out:
+                    out = eq.process(out, bass_db, mid_db, treble_db)
+                    if out and (volume != 1.0 or boost != 1.0):
+                        out = _apply_local_levels(out, volume, boost)
                 if out:
                     stream.write(out)
     finally:
