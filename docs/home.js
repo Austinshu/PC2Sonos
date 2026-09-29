@@ -1,7 +1,7 @@
 /* PC2Sonos home: hero signal ribbons, echo lab (Web Audio beat + lanes), scroll-lit statement, reveals. */
 (function () {
   "use strict";
-  var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var reduce = false; // motion stays on everywhere, including phones with Reduce Motion on
   var DPR = Math.min(window.devicePixelRatio || 1, 2);
 
   /* ---------------- audio ---------------- */
