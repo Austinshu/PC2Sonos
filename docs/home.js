@@ -11,7 +11,7 @@
   var SNARE= [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1];
   var HAT  = [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,1,1,0];
   var BASS = [0,null,null,0, null,null,12,null, 3,null,null,3, null,5,null,7];
-  var ctx = null, mix, master, delay, echoGain, analyser, noiseBuf, playing = false, synced = false;
+  var ctx = null, mix, master, delay, echoGain, analyser, noiseBuf, playing = false, synced = true, userStopped = false;
   var nextTime = 0, step = 0, timer = null, startedAt = 0;
 
   function initAudio() {
@@ -24,7 +24,7 @@
     var comp = ctx.createDynamicsCompressor();
     master.connect(comp); comp.connect(analyser); analyser.connect(ctx.destination);
     mix = ctx.createGain(); mix.gain.value = 0.7; mix.connect(master);
-    delay = ctx.createDelay(2); delay.delayTime.value = ECHO;
+    delay = ctx.createDelay(2); delay.delayTime.value = synced ? 0 : ECHO;
     echoGain = ctx.createGain(); echoGain.gain.value = 0.85;
     mix.connect(delay); delay.connect(echoGain); echoGain.connect(master);
     noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
@@ -71,17 +71,27 @@
   }
 
   var soundBtn = document.getElementById("soundBtn"), soundLbl = document.getElementById("soundLbl");
-  var playBtn = document.getElementById("labPlay"), sw = document.getElementById("syncSw"), swLbl = document.getElementById("syncLbl");
+  var playBtn = document.getElementById("labPlay"), sws = Array.prototype.slice.call(document.querySelectorAll(".sync-switch"));
+  var hint = document.getElementById("tapHint");
   var lab = document.getElementById("lab");
   function paintButtons() {
     if (soundBtn) { soundBtn.setAttribute("aria-pressed", playing ? "true" : "false"); soundLbl.textContent = playing ? "Sound off" : "Sound on"; }
     if (playBtn) playBtn.innerHTML = playing ? "&#10074;&#10074; Stop the beat" : "&#9654; Play the beat";
-    if (sw) { sw.setAttribute("aria-checked", synced ? "true" : "false"); swLbl.textContent = synced ? "PC2Sonos on, in sync" : "PC2Sonos off"; }
+    sws.forEach(function (sw) { sw.setAttribute("aria-checked", synced ? "true" : "false"); sw.querySelector(".sync-lbl").textContent = synced ? "In sync" : "Echo on"; });
+    if (hint && playing) hint.textContent = synced ? "Flip the switch to hear the echo you'd get without PC2Sonos." : "That's the echo. Flip it back to fix it.";
     if (lab) lab.classList.toggle("synced", synced);
   }
-  if (soundBtn) soundBtn.addEventListener("click", function () { setPlaying(!playing); });
-  if (playBtn) playBtn.addEventListener("click", function () { setPlaying(!playing); });
-  if (sw) sw.addEventListener("click", function () { setSynced(!synced); if (!playing) setPlaying(true); });
+  function toggle() { userStopped = playing; setPlaying(!playing); }
+  if (soundBtn) soundBtn.addEventListener("click", toggle);
+  if (playBtn) playBtn.addEventListener("click", toggle);
+  sws.forEach(function (sw) { sw.addEventListener("click", function () { setSynced(!synced); if (!playing) { userStopped = false; setPlaying(true); } }); });
+  // Browsers only allow sound after a tap or key press, so the beat starts on the first one anywhere on the page.
+  function firstTouch(e) {
+    if (e.target.closest && e.target.closest("[data-audio-ctl]")) return;
+    if (!playing && !userStopped) setPlaying(true);
+    ["pointerdown", "keydown", "touchstart"].forEach(function (t) { removeEventListener(t, firstTouch, true); });
+  }
+  ["pointerdown", "keydown", "touchstart"].forEach(function (t) { addEventListener(t, firstTouch, true); });
 
   /* ---------------- lanes ---------------- */
   // amplitude of the beat at time t (seconds), same pattern the synth plays
@@ -96,7 +106,7 @@
     }
     return Math.min(a, 1.3);
   }
-  var LAG = 1.48, WINDOW = 4.2, pcShift = 0, gapShown = 1480;
+  var LAG = 1.48, WINDOW = 4.2, pcShift = LAG, gapShown = 0;
   var lanes = [document.getElementById("lanePc"), document.getElementById("laneSonos")].filter(Boolean);
   function fit(c) { var r = c.getBoundingClientRect(); c.width = Math.max(1, r.width * DPR); c.height = Math.max(1, r.height * DPR); }
   function grad(g, w) { var l = g.createLinearGradient(0, 0, w, 0); l.addColorStop(0, "#ffb23f"); l.addColorStop(.52, "#ff3d7f"); l.addColorStop(1, "#7b5cff"); return l; }
@@ -169,8 +179,7 @@
     drawHero(now);
     requestAnimationFrame(frame);
   }
-  if (reduce) { lanes.forEach(function (c) { drawLane(c, 3, c.id === "laneSonos" ? LAG : 0, c.id === "laneSonos"); }); drawHero(0); sw && sw.addEventListener("click", function () { pcShift = synced ? LAG : 0; if (lanes[0]) drawLane(lanes[0], 3, pcShift, false); gapNum.textContent = synced ? "0" : "1,480"; }); }
-  else requestAnimationFrame(frame);
+  requestAnimationFrame(frame);
 
   /* ---------------- scroll-lit statement ---------------- */
   var st = document.getElementById("statement");

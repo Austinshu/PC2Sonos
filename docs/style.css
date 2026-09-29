@@ -310,3 +310,10 @@ main::before {
 }
 .article h1 { font-size: clamp(44px, 6.4vw, 92px); max-width: 15ch; }
 .article h1 + p.lead { margin-top: 28px; }
+
+/* hero sync toggle */
+.hero-mix { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.hero-mix .hint { color: var(--dim); font-size: 14px; }
+.hero-mix .hint.gone { display: none; }
+.switch .sync-lbl { min-width: 7.5em; text-align: left; }
+.switch[aria-checked="false"] .sync-lbl { color: var(--magenta); }
