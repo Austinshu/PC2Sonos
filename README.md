@@ -89,8 +89,9 @@ be captured this way. If a ticked app is silent, use "Whole system".
 Sonos speaker turns off when it runs out. Your PC speakers aren't affected.
 
 **Reduced bandwidth.** If a Sonos speaker on weak Wi-Fi keeps cutting out,
-turn on **Reduced bandwidth** in the Sonos streaming quality card. It halves
-the sample rate sent to Sonos. Your PC speakers stay at full quality.
+turn on **Reduced bandwidth** in the Sonos streaming quality card. It sends
+Sonos mono instead of stereo, which is half the data. Your PC speakers stay
+in full stereo.
 
 **Faster start after a reboot.** Click the **&#9733;** next to the speaker
 you use most to make it the default. PC2Sonos then connects to it straight

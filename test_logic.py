@@ -1829,6 +1829,28 @@ r = client.get("/stream/fake-uid.wav")
 assert r.status_code == 200, "streaming must never be gated"
 print("  /stream/<uid>.wav reachable OK")
 
+# "Reduced bandwidth" sends Sonos mono at the capture rate. It used to halve
+# the sample rate to 22050Hz, which a real Sonos cut in and out on.
+import struct as _st
+import numpy as _np_rb
+webapp.config["sonos_stream_quality"] = "reduced"
+_rate, _ch = webapp.config["sample_rate"], webapp.config["channels"]
+webapp.config["channels"] = 2
+try:
+    _gen = webapp.app.view_functions["stream_wav"]("rb-test").response
+    _hdr = next(_gen)
+    _fmt = _st.unpack("<IHHIIHH", _hdr[16:36])
+    assert _fmt[2] == 1 and _fmt[3] == _rate, f"reduced = mono at the capture rate, got {_fmt}"
+    _stereo = _np_rb.array([1000, 3000] * 64, dtype=_np_rb.int16).tobytes()
+    threading.Timer(0.2, lambda: webapp.broadcaster.publish(_stereo)).start()
+    _mono = _np_rb.frombuffer(next(_gen), dtype=_np_rb.int16)
+    assert len(_mono) == 64 and _np_rb.all(_mono == 2000), "both channels averaged into one"
+    _gen.close()
+finally:
+    webapp.config["sonos_stream_quality"] = "full"
+    webapp.config["channels"] = _ch
+print("  reduced bandwidth streams mono at the normal rate OK")
+
 print("[test] donation prompt: once-a-week throttling and permanent opt-out...")
 webapp.config["donated"] = False
 webapp.config["last_donate_prompt_at"] = 0

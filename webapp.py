@@ -26,12 +26,13 @@ app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # generous cap on an uploa
 
 UPLOAD_DIR = APP_DIR / "uploads"
 
-# The rate the Sonos leg is downsampled to in "reduced" streaming-quality
-# mode (see config.sonos_stream_quality) -- half of the standard 44100
-# capture rate, so the math in stream_wav's audioop.ratecv call is exact.
-# The local PC-speaker path is untouched by this; only what's sent to
-# Sonos changes. Never used if the capture rate is already at or below it.
-REDUCED_SAMPLE_RATE = 22050
+# "Reduced" streaming quality (config.sonos_stream_quality) sends Sonos
+# MONO at the normal capture rate: half the bandwidth of stereo, in a
+# format Sonos plays natively. It used to halve the sample rate instead
+# (to 22050Hz), which a real Sonos cut in and out on -- the very thing the
+# option exists to stop -- while PC2Sonos was verifiably sending that
+# stream at a steady, exact rate. The local PC-speaker path is untouched;
+# only what's sent to Sonos changes.
 
 # (password_text, mtime_ns) cache so we re-read dashboard_password.txt only
 # when it actually changes -- create/edit the file and the next request
@@ -545,7 +546,7 @@ DASHBOARD_HTML = """
   </div>
   <details class="info-toggle">
     <summary>&#9432; What does this do?</summary>
-    <div class="card-desc">Full quality sends Sonos the exact captured audio (typically 44.1kHz) -- the same as always. Reduced halves the sample rate sent to Sonos only; your PC speakers are never affected. Lower bandwidth means less for a weak Wi-Fi link to a speaker to keep up with, at the cost of slightly less crisp highs -- worth trying if a speaker keeps cutting in and out.</div>
+    <div class="card-desc">Full quality sends Sonos the exact captured audio in stereo -- the same as always. Reduced sends Sonos mono instead, which is half the data; your PC speakers are never affected. Less data means less for a weak Wi-Fi link to a speaker to keep up with, at the cost of stereo -- worth trying if a speaker keeps cutting in and out.</div>
   </details>
   <select id="streamQuality" onchange="setStreamQuality()" style="width:100%; padding:6px; background:#111; color:#eee; border:1px solid #333; border-radius:6px;">
     <option value="full">Full quality</option>
@@ -1806,11 +1807,11 @@ def api_sleep_timer():
 
 @app.route("/api/stream_quality", methods=["GET", "POST"])
 def api_stream_quality():
-    """The Sonos-only bandwidth setting (see REDUCED_SAMPLE_RATE and
-    stream_wav) -- separate from local_gain/local_eq's config routes
+    """The Sonos-only bandwidth setting (see the note above wav_header's
+    callers at the top of this file, and stream_wav) -- separate from local_gain/local_eq's config routes
     because changing it has to force every currently-streaming speaker
     to reconnect (a live connection's WAV header already declared the
-    old sample rate; there's no way to change that mid-stream), the same
+    old format; there's no way to change that mid-stream), the same
     way switching capture mode already does."""
     if request.method == "GET":
         return jsonify({"quality": config.get("sonos_stream_quality", "full")})
@@ -2178,17 +2179,15 @@ def stream_wav(uid):
         in_rate = config["sample_rate"]
         channels = config["channels"]
         sample_width = config["sample_width"]
-        # "reduced" halves the rate sent to THIS speaker only -- the local
-        # PC-speaker path reads straight from the broadcaster untouched,
-        # so this never affects it. Decided once per connection: a change
-        # mid-stream forces a reconnect anyway (api_stream_quality), which
-        # starts a fresh generate() call and picks up the new setting.
-        out_rate = in_rate
-        if config.get("sonos_stream_quality") == "reduced" and in_rate > REDUCED_SAMPLE_RATE:
-            out_rate = REDUCED_SAMPLE_RATE
-        resample_state = None
+        # "reduced" sends THIS speaker mono (half the data, same rate) --
+        # the local PC-speaker path reads straight from the broadcaster
+        # untouched, so this never affects it. Decided once per
+        # connection: a change mid-stream forces a reconnect anyway
+        # (api_stream_quality), which starts a fresh generate() call and
+        # picks up the new setting.
+        mono = config.get("sonos_stream_quality") == "reduced" and channels == 2
 
-        yield wav_header(out_rate, channels, sample_width)
+        yield wav_header(in_rate, 1 if mono else channels, sample_width)
         sid, q = broadcaster.subscribe(maxlen=200)
         # Sonos pulls this over HTTP in real time. If this generator ever
         # falls a little behind for a moment -- a GC pause, another
@@ -2231,9 +2230,8 @@ def stream_wav(uid):
                               f"(~{backlog * chunk_ms:.0f}ms) for {uid}; "
                               f"dropped {dropped} chunks (~{dropped * chunk_ms:.0f}ms) "
                               f"-- this is an audible skip on the Sonos side")
-                if out_rate != in_rate:
-                    chunk, resample_state = audioop.ratecv(
-                        chunk, sample_width, channels, in_rate, out_rate, resample_state)
+                if mono:
+                    chunk = audioop.tomono(chunk, sample_width, 0.5, 0.5)
                 yield chunk
         finally:
             broadcaster.unsubscribe(sid)
