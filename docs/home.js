@@ -5,78 +5,33 @@
   var DPR = Math.min(window.devicePixelRatio || 1, 2);
 
   /* ---------------- audio ---------------- */
-  // The beat is rendered once, offline, into two looping WAVs (in sync, and with the echo) and played
-  // through plain <audio> elements, the same way the DJ Koma site plays its music. Phones start an
-  // <audio> element reliably from one tap, and iPhones play it even with the silent switch on.
+  // The beat is two pre-rendered looping WAVs (in sync, and with the echo) played through plain <audio>
+  // elements, the same way the DJ Koma site plays its music. Phones start an <audio> element from the
+  // first touch, and iPhones play it even with the silent switch on. The pattern below matches the files
+  // so the waveform lanes line up with what you hear.
   var BPM = 116, STEP = 60 / BPM / 4, ECHO = 0.19, BARS = 4, LOOP = 16 * STEP * BARS;
   // 16-step pattern: k kick, s snare, h hat, bass notes (semitones from A1)
   var KICK = [1,0,0,0, 1,0,0,0, 1,0,1,0, 1,0,0,0];
   var SNARE= [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1];
   var HAT  = [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,1,1,0];
   var BASS = [0,null,null,0, null,null,12,null, 3,null,null,3, null,5,null,7];
-  var playing = false, synced = true, userStopped = false, pending = false;
+  var playing = false, starting = false, synced = true, userStopped = false;
 
-  function env(g, t, a, peak, dec) { g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + dec); }
-  function renderBeat(withEcho) {
-    var OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-    if (!OAC) return Promise.reject(new Error("no offline audio"));
-    var rate = 44100, loopLen = Math.round(LOOP * rate), c = new OAC(1, loopLen + rate, rate);
-    var comp = c.createDynamicsCompressor(), master = c.createGain(), mix = c.createGain();
-    master.gain.value = 0.9; mix.gain.value = 0.7;
-    mix.connect(master); master.connect(comp); comp.connect(c.destination);
-    if (withEcho) { var d = c.createDelay(1); d.delayTime.value = ECHO; var eg = c.createGain(); eg.gain.value = 0.85; mix.connect(d); d.connect(eg); eg.connect(master); }
-    var nb = c.createBuffer(1, rate, rate), nd = nb.getChannelData(0);
-    for (var i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
-    function kick(t) { var o = c.createOscillator(), g = c.createGain(); o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.14); env(g, t, 0.003, 1.0, 0.42); o.connect(g); g.connect(mix); o.start(t); o.stop(t + 0.45); }
-    function noise(t, type, freq, peak, dec) { var s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain(); s.buffer = nb; f.type = type; f.frequency.value = freq; env(g, t, 0.002, peak, dec); s.connect(f); f.connect(g); g.connect(mix); s.start(t); s.stop(t + dec + 0.02); }
-    function snare(t) { noise(t, "bandpass", 1800, 0.55, 0.2); var o = c.createOscillator(), g = c.createGain(); o.frequency.value = 190; env(g, t, 0.002, 0.3, 0.1); o.connect(g); g.connect(mix); o.start(t); o.stop(t + 0.12); }
-    function bass(t, semi) { var o = c.createOscillator(), f = c.createBiquadFilter(), g = c.createGain(); o.type = "sawtooth"; o.frequency.value = 55 * Math.pow(2, semi / 12); f.type = "lowpass"; f.Q.value = 8; f.frequency.setValueAtTime(900, t); f.frequency.exponentialRampToValueAtTime(140, t + 0.22); env(g, t, 0.005, 0.32, STEP * 1.8); o.connect(f); f.connect(g); g.connect(mix); o.start(t); o.stop(t + STEP * 2); }
-    for (var n = 0; n < 16 * BARS; n++) {
-      var t = n * STEP + 0.001, k = n % 16;
-      if (KICK[k]) kick(t); if (SNARE[k]) snare(t);
-      if (HAT[k]) noise(t, "highpass", 7500, 0.18, 0.05);
-      if (BASS[k] !== null) bass(t, BASS[k]);
-    }
-    var done = c.startRendering();
-    if (!done || !done.then) done = new Promise(function (res) { c.oncomplete = function (e) { res(e.renderedBuffer); }; });
-    return done.then(function (buf) {
-      // fold the tails that ring past the end back onto the start, so the loop is seamless
-      var src = buf.getChannelData(0), out = new Float32Array(loopLen);
-      for (var j = 0; j < src.length; j++) out[j % loopLen] += src[j];
-      return URL.createObjectURL(toWav(out, rate));
-    });
-  }
-  function toWav(data, rate) {
-    var b = new ArrayBuffer(44 + data.length * 2), v = new DataView(b), p = 0;
-    function str(x) { for (var i = 0; i < x.length; i++) v.setUint8(p++, x.charCodeAt(i)); }
-    function u32(x) { v.setUint32(p, x, true); p += 4; } function u16(x) { v.setUint16(p, x, true); p += 2; }
-    str("RIFF"); u32(36 + data.length * 2); str("WAVE"); str("fmt "); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16); str("data"); u32(data.length * 2);
-    for (var i = 0; i < data.length; i++) { var x = Math.max(-1, Math.min(1, data[i])); v.setInt16(p, x < 0 ? x * 0x8000 : x * 0x7fff, true); p += 2; }
-    return new Blob([b], { type: "audio/wav" });
-  }
-
-  function makeEl() { var a = new Audio(); a.loop = true; a.preload = "auto"; a.setAttribute("playsinline", ""); return a; }
-  var dryEl = makeEl(), echoEl = makeEl();
+  function makeEl(src) { var a = new Audio(src); a.loop = true; a.preload = "auto"; a.setAttribute("playsinline", ""); return a; }
+  var dryEl = makeEl("beat.wav"), echoEl = makeEl("beat-echo.wav");
   function applyMute() { dryEl.muted = !synced; echoEl.muted = synced; }
   applyMute();
-  Promise.all([renderBeat(false), renderBeat(true)]).then(function (urls) {
-    dryEl.src = urls[0]; echoEl.src = urls[1];
-    if (pending) start(); // someone tapped before the beat was ready
-  }, function () {});
-
-  // Must be called from inside a tap, click, key press (or any event once the page has had one).
+  // Must be called from inside a touch, click or key press. If the browser blocks it, the next one retries.
   function start() {
-    if (playing) return;
-    if (!dryEl.src) { pending = true; return; }
-    pending = false;
+    if (playing || starting) return;
+    starting = true;
     try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
     echoEl.currentTime = dryEl.currentTime;
-    var a = dryEl.play(), b = echoEl.play();
-    playing = true; paintButtons();
-    Promise.all([a, b].map(function (x) { return x && x.then ? x : Promise.resolve(); })).then(function () { stopListening(); },
-      function () { dryEl.pause(); echoEl.pause(); playing = false; paintButtons(); }); // the browser said no; wait for the next tap
+    var ps = [dryEl.play(), echoEl.play()].map(function (x) { return x && x.then ? x : Promise.resolve(); });
+    Promise.all(ps).then(function () { starting = false; playing = true; paintButtons(); stopListening(); },
+      function () { starting = false; dryEl.pause(); echoEl.pause(); });
   }
-  function stop() { dryEl.pause(); echoEl.pause(); playing = false; pending = false; paintButtons(); }
+  function stop() { dryEl.pause(); echoEl.pause(); playing = false; paintButtons(); }
   function setPlaying(on) { on ? start() : stop(); }
   function setSynced(on) { synced = on; applyMute(); paintButtons(); }
   function audioTime() { return dryEl.currentTime || 0; }
@@ -97,16 +52,13 @@
   if (soundBtn) soundBtn.addEventListener("click", toggle);
   if (playBtn) playBtn.addEventListener("click", toggle);
   sws.forEach(function (sw) { sw.addEventListener("click", function () { setSynced(!synced); if (!playing) { userStopped = false; start(); } }); });
-  // Start the beat on the first thing the visitor does. Taps, clicks and keys always count. Scrolling
-  // counts on desktop once the page has had any click, but phones never allow sound from a scroll alone,
-  // so on a phone the first tap starts it. Keep trying until the browser actually lets it play.
-  var FIRST = ["touchend", "pointerup", "click", "keydown", "touchstart", "pointerdown", "wheel", "scroll"];
+  // Start the beat on the first interaction of any kind (tap, swipe, click, key, wheel, scroll), like the
+  // DJ Koma site. On phones the finger lifting off after a tap or a scroll swipe is what unlocks sound.
+  // Listeners stay on until the beat is actually playing, so a blocked attempt retries on the next one.
+  var FIRST = ["click", "touchstart", "touchend", "touchmove", "pointerdown", "pointerup", "keydown", "wheel", "scroll"];
   function firstTouch(e) {
     if (e.target && e.target.closest && e.target.closest("[data-audio-ctl]")) return;
     if (userStopped) return stopListening();
-    // a scroll can only start sound after the visitor has tapped or clicked once; don't flicker trying before that
-    var ua = navigator.userActivation;
-    if ((e.type === "scroll" || e.type === "wheel") && ua && !ua.hasBeenActive) return;
     start();
   }
   function stopListening() { FIRST.forEach(function (t) { removeEventListener(t, firstTouch, { capture: true, passive: true }); }); }
@@ -116,6 +68,8 @@
     pill.addEventListener("click", function () { userStopped = false; start(); });
     addEventListener("scroll", function () { if (!playing && !userStopped && scrollY > 40) pill.hidden = false; }, { passive: true });
   }
+  // iOS sometimes pauses page audio (a call, another app); pick the beat back up on the next scroll.
+  addEventListener("scroll", function () { if (playing && dryEl.paused) { var r = dryEl.play(); if (r && r.catch) r.catch(function () {}); r = echoEl.play(); if (r && r.catch) r.catch(function () {}); } }, { passive: true });
 
   /* ---------------- lanes ---------------- */
   // amplitude of the beat at time t (seconds), same pattern the synth plays
