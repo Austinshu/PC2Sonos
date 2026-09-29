@@ -39,12 +39,11 @@
   var soundBtn = document.getElementById("soundBtn"), soundLbl = document.getElementById("soundLbl");
   var playBtn = document.getElementById("labPlay"), sws = Array.prototype.slice.call(document.querySelectorAll(".sync-switch"));
   var hint = document.getElementById("tapHint");
-  var lab = document.getElementById("lab"), pill = document.getElementById("soundPill");
+  var lab = document.getElementById("lab");
   function paintButtons() {
     if (soundBtn) { soundBtn.setAttribute("aria-pressed", playing ? "true" : "false"); soundLbl.textContent = playing ? "Sound off" : "Sound on"; }
     if (playBtn) playBtn.innerHTML = playing ? "&#10074;&#10074; Stop the beat" : "&#9654; Play the beat";
     sws.forEach(function (sw) { sw.setAttribute("aria-checked", synced ? "true" : "false"); sw.querySelector(".sync-lbl").textContent = synced ? "In sync" : "Echo on"; });
-    if (pill && playing) pill.hidden = true;
     if (hint && playing) hint.textContent = synced ? "Flip the switch to hear the echo you'd get without PC2Sonos." : "That's the echo. Flip it back to fix it.";
     if (lab) lab.classList.toggle("synced", synced);
   }
@@ -63,11 +62,6 @@
   }
   function stopListening() { FIRST.forEach(function (t) { removeEventListener(t, firstTouch, { capture: true, passive: true }); }); }
   FIRST.forEach(function (t) { addEventListener(t, firstTouch, { capture: true, passive: true }); });
-  // Phones won't start sound from a scroll, so the first scroll pops up a tap target instead.
-  if (pill) {
-    pill.addEventListener("click", function () { userStopped = false; start(); });
-    addEventListener("scroll", function () { if (!playing && !userStopped && scrollY > 40) pill.hidden = false; }, { passive: true });
-  }
   // iOS sometimes pauses page audio (a call, another app); pick the beat back up on the next scroll.
   addEventListener("scroll", function () { if (playing && dryEl.paused) { var r = dryEl.play(); if (r && r.catch) r.catch(function () {}); r = echoEl.play(); if (r && r.catch) r.catch(function () {}); } }, { passive: true });
 
