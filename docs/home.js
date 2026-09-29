@@ -84,11 +84,12 @@
   var soundBtn = document.getElementById("soundBtn"), soundLbl = document.getElementById("soundLbl");
   var playBtn = document.getElementById("labPlay"), sws = Array.prototype.slice.call(document.querySelectorAll(".sync-switch"));
   var hint = document.getElementById("tapHint");
-  var lab = document.getElementById("lab");
+  var lab = document.getElementById("lab"), pill = document.getElementById("soundPill");
   function paintButtons() {
     if (soundBtn) { soundBtn.setAttribute("aria-pressed", playing ? "true" : "false"); soundLbl.textContent = playing ? "Sound off" : "Sound on"; }
     if (playBtn) playBtn.innerHTML = playing ? "&#10074;&#10074; Stop the beat" : "&#9654; Play the beat";
     sws.forEach(function (sw) { sw.setAttribute("aria-checked", synced ? "true" : "false"); sw.querySelector(".sync-lbl").textContent = synced ? "In sync" : "Echo on"; });
+    if (pill && playing) pill.hidden = true;
     if (hint && playing) hint.textContent = synced ? "Flip the switch to hear the echo you'd get without PC2Sonos." : "That's the echo. Flip it back to fix it.";
     if (lab) lab.classList.toggle("synced", synced);
   }
@@ -103,10 +104,18 @@
   function firstTouch(e) {
     if (e.target && e.target.closest && e.target.closest("[data-audio-ctl]")) return;
     if (userStopped) return stopListening();
+    // a scroll can only start sound after the visitor has tapped or clicked once; don't flicker trying before that
+    var ua = navigator.userActivation;
+    if ((e.type === "scroll" || e.type === "wheel") && ua && !ua.hasBeenActive) return;
     start();
   }
   function stopListening() { FIRST.forEach(function (t) { removeEventListener(t, firstTouch, { capture: true, passive: true }); }); }
   FIRST.forEach(function (t) { addEventListener(t, firstTouch, { capture: true, passive: true }); });
+  // Phones won't start sound from a scroll, so the first scroll pops up a tap target instead.
+  if (pill) {
+    pill.addEventListener("click", function () { userStopped = false; start(); });
+    addEventListener("scroll", function () { if (!playing && !userStopped && scrollY > 40) pill.hidden = false; }, { passive: true });
+  }
 
   /* ---------------- lanes ---------------- */
   // amplitude of the beat at time t (seconds), same pattern the synth plays

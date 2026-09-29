@@ -319,3 +319,17 @@ main::before {
 .switch[aria-checked="false"] .sync-lbl { color: var(--magenta); }
 section.block.steps-top { padding-top: 48px; }
 .steps-top .how { margin-top: 20px; }
+
+/* floating "tap for sound" prompt that appears on first scroll */
+.sound-pill {
+  position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); z-index: 60; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 12px; cursor: pointer; border: 0;
+  padding: 16px 26px; border-radius: 999px; background: var(--signal); color: #fff;
+  white-space: nowrap; font: 800 16px/1 var(--f-body); letter-spacing: .01em; box-shadow: 0 14px 50px -10px rgba(255,61,127,.8);
+  animation: pillIn .45s cubic-bezier(.3,1.5,.5,1), pillPulse 1.6s ease-in-out .5s infinite;
+}
+.sound-pill .bars { display: inline-flex; gap: 3px; align-items: flex-end; height: 16px; }
+.sound-pill .bars i { width: 3px; height: 16px; background: #fff; border-radius: 2px; transform-origin: bottom; animation: eq .5s ease-in-out infinite alternate; }
+.sound-pill .bars i:nth-child(2) { animation-delay: -.2s; } .sound-pill .bars i:nth-child(3) { animation-delay: -.35s; } .sound-pill .bars i:nth-child(4) { animation-delay: -.1s; }
+@keyframes pillIn { from { transform: translate(-50%, 120%); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+@keyframes pillPulse { 50% { box-shadow: 0 14px 70px -4px rgba(255,61,127,1); } }
