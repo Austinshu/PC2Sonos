@@ -236,7 +236,7 @@ footer.site { margin-top: 120px; border-top: 1px solid var(--line); overflow: hi
 .marquee span .s { font-size: 1.05em; }
 .marquee span::after { content: "\2726"; color: var(--magenta); font-size: .6em; }
 @keyframes slide { to { transform: translateX(-50%); } }
-@media (prefers-reduced-motion: reduce) { .marquee .track { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .marquee .track { animation-duration: 70s; } }
 
 /* scroll-lit statement */
 .statement { padding-block: 140px 60px; }
