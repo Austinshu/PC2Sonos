@@ -317,3 +317,5 @@ main::before {
 .hero-mix .hint.gone { display: none; }
 .switch .sync-lbl { min-width: 7.5em; text-align: left; }
 .switch[aria-checked="false"] .sync-lbl { color: var(--magenta); }
+section.block.steps-top { padding-top: 48px; }
+.steps-top .how { margin-top: 20px; }

@@ -5,83 +5,81 @@
   var DPR = Math.min(window.devicePixelRatio || 1, 2);
 
   /* ---------------- audio ---------------- */
-  var BPM = 116, STEP = 60 / BPM / 4, ECHO = 0.19;
+  // The beat is rendered once, offline, into two looping WAVs (in sync, and with the echo) and played
+  // through plain <audio> elements, the same way the DJ Koma site plays its music. Phones start an
+  // <audio> element reliably from one tap, and iPhones play it even with the silent switch on.
+  var BPM = 116, STEP = 60 / BPM / 4, ECHO = 0.19, BARS = 4, LOOP = 16 * STEP * BARS;
   // 16-step pattern: k kick, s snare, h hat, bass notes (semitones from A1)
   var KICK = [1,0,0,0, 1,0,0,0, 1,0,1,0, 1,0,0,0];
   var SNARE= [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1];
   var HAT  = [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,1,1,0];
   var BASS = [0,null,null,0, null,null,12,null, 3,null,null,3, null,5,null,7];
-  var ctx = null, mix, master, delay, echoGain, analyser, noiseBuf, playing = false, synced = true, userStopped = false;
-  var nextTime = 0, step = 0, timer = null, startedAt = 0;
+  var playing = false, synced = true, userStopped = false, pending = false;
 
-  function initAudio() {
-    if (ctx) return;
-    var AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    ctx = new AC();
-    master = ctx.createGain(); master.gain.value = 0.0;
-    analyser = ctx.createAnalyser(); analyser.fftSize = 512;
-    var comp = ctx.createDynamicsCompressor();
-    master.connect(comp); comp.connect(analyser); analyser.connect(ctx.destination);
-    mix = ctx.createGain(); mix.gain.value = 0.7; mix.connect(master);
-    delay = ctx.createDelay(2); delay.delayTime.value = synced ? 0 : ECHO;
-    echoGain = ctx.createGain(); echoGain.gain.value = 0.85;
-    mix.connect(delay); delay.connect(echoGain); echoGain.connect(master);
-    noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-    var d = noiseBuf.getChannelData(0); for (var i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-  }
   function env(g, t, a, peak, dec) { g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + dec); }
-  function kick(t) { var o = ctx.createOscillator(), g = ctx.createGain(); o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.14); env(g, t, 0.003, 1.0, 0.42); o.connect(g); g.connect(mix); o.start(t); o.stop(t + 0.45); }
-  function noise(t, type, freq, peak, dec) { var s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain(); s.buffer = noiseBuf; f.type = type; f.frequency.value = freq; env(g, t, 0.002, peak, dec); s.connect(f); f.connect(g); g.connect(mix); s.start(t); s.stop(t + dec + 0.02); }
-  function snare(t) { noise(t, "bandpass", 1800, 0.55, 0.2); var o = ctx.createOscillator(), g = ctx.createGain(); o.frequency.value = 190; env(g, t, 0.002, 0.3, 0.1); o.connect(g); g.connect(mix); o.start(t); o.stop(t + 0.12); }
-  function bass(t, semi) { var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain(); o.type = "sawtooth"; o.frequency.value = 55 * Math.pow(2, semi / 12); f.type = "lowpass"; f.Q.value = 8; f.frequency.setValueAtTime(900, t); f.frequency.exponentialRampToValueAtTime(140, t + 0.22); env(g, t, 0.005, 0.32, STEP * 1.8); o.connect(f); f.connect(g); g.connect(mix); o.start(t); o.stop(t + STEP * 2); }
-  function schedule() {
-    while (nextTime < ctx.currentTime + 0.12) {
-      var i = step % 16;
-      if (KICK[i]) kick(nextTime);
-      if (SNARE[i]) snare(nextTime);
-      if (HAT[i]) noise(nextTime, "highpass", 7500, 0.18, 0.05);
-      if (BASS[i] !== null) bass(nextTime, BASS[i]);
-      nextTime += STEP; step++;
+  function renderBeat(withEcho) {
+    var OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!OAC) return Promise.reject(new Error("no offline audio"));
+    var rate = 44100, loopLen = Math.round(LOOP * rate), c = new OAC(1, loopLen + rate, rate);
+    var comp = c.createDynamicsCompressor(), master = c.createGain(), mix = c.createGain();
+    master.gain.value = 0.9; mix.gain.value = 0.7;
+    mix.connect(master); master.connect(comp); comp.connect(c.destination);
+    if (withEcho) { var d = c.createDelay(1); d.delayTime.value = ECHO; var eg = c.createGain(); eg.gain.value = 0.85; mix.connect(d); d.connect(eg); eg.connect(master); }
+    var nb = c.createBuffer(1, rate, rate), nd = nb.getChannelData(0);
+    for (var i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+    function kick(t) { var o = c.createOscillator(), g = c.createGain(); o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.14); env(g, t, 0.003, 1.0, 0.42); o.connect(g); g.connect(mix); o.start(t); o.stop(t + 0.45); }
+    function noise(t, type, freq, peak, dec) { var s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain(); s.buffer = nb; f.type = type; f.frequency.value = freq; env(g, t, 0.002, peak, dec); s.connect(f); f.connect(g); g.connect(mix); s.start(t); s.stop(t + dec + 0.02); }
+    function snare(t) { noise(t, "bandpass", 1800, 0.55, 0.2); var o = c.createOscillator(), g = c.createGain(); o.frequency.value = 190; env(g, t, 0.002, 0.3, 0.1); o.connect(g); g.connect(mix); o.start(t); o.stop(t + 0.12); }
+    function bass(t, semi) { var o = c.createOscillator(), f = c.createBiquadFilter(), g = c.createGain(); o.type = "sawtooth"; o.frequency.value = 55 * Math.pow(2, semi / 12); f.type = "lowpass"; f.Q.value = 8; f.frequency.setValueAtTime(900, t); f.frequency.exponentialRampToValueAtTime(140, t + 0.22); env(g, t, 0.005, 0.32, STEP * 1.8); o.connect(f); f.connect(g); g.connect(mix); o.start(t); o.stop(t + STEP * 2); }
+    for (var n = 0; n < 16 * BARS; n++) {
+      var t = n * STEP + 0.001, k = n % 16;
+      if (KICK[k]) kick(t); if (SNARE[k]) snare(t);
+      if (HAT[k]) noise(t, "highpass", 7500, 0.18, 0.05);
+      if (BASS[k] !== null) bass(t, BASS[k]);
     }
+    var done = c.startRendering();
+    if (!done || !done.then) done = new Promise(function (res) { c.oncomplete = function (e) { res(e.renderedBuffer); }; });
+    return done.then(function (buf) {
+      // fold the tails that ring past the end back onto the start, so the loop is seamless
+      var src = buf.getChannelData(0), out = new Float32Array(loopLen);
+      for (var j = 0; j < src.length; j++) out[j % loopLen] += src[j];
+      return URL.createObjectURL(toWav(out, rate));
+    });
   }
-  // Phones only let a page make sound from inside a tap. unlock() must run synchronously in that tap:
-  // it resumes the context, plays a one-sample silent buffer, and starts a looping silent <audio>
-  // element, which puts iOS into media playback so the ringer/silent switch doesn't mute the beat.
-  var SILENT = "data:audio/wav;base64,UklGRsQPAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YaAPAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA", silentEl = null;
-  function unlock() {
-    initAudio(); if (!ctx) return;
+  function toWav(data, rate) {
+    var b = new ArrayBuffer(44 + data.length * 2), v = new DataView(b), p = 0;
+    function str(x) { for (var i = 0; i < x.length; i++) v.setUint8(p++, x.charCodeAt(i)); }
+    function u32(x) { v.setUint32(p, x, true); p += 4; } function u16(x) { v.setUint16(p, x, true); p += 2; }
+    str("RIFF"); u32(36 + data.length * 2); str("WAVE"); str("fmt "); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16); str("data"); u32(data.length * 2);
+    for (var i = 0; i < data.length; i++) { var x = Math.max(-1, Math.min(1, data[i])); v.setInt16(p, x < 0 ? x * 0x8000 : x * 0x7fff, true); p += 2; }
+    return new Blob([b], { type: "audio/wav" });
+  }
+
+  function makeEl() { var a = new Audio(); a.loop = true; a.preload = "auto"; a.setAttribute("playsinline", ""); return a; }
+  var dryEl = makeEl(), echoEl = makeEl();
+  function applyMute() { dryEl.muted = !synced; echoEl.muted = synced; }
+  applyMute();
+  Promise.all([renderBeat(false), renderBeat(true)]).then(function (urls) {
+    dryEl.src = urls[0]; echoEl.src = urls[1];
+    if (pending) start(); // someone tapped before the beat was ready
+  }, function () {});
+
+  // Must be called from inside a tap, click, key press (or any event once the page has had one).
+  function start() {
+    if (playing) return;
+    if (!dryEl.src) { pending = true; return; }
+    pending = false;
     try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
-    if (ctx.state !== "running") ctx.resume();
-    var b = ctx.createBuffer(1, 1, 22050), src = ctx.createBufferSource(); src.buffer = b; src.connect(ctx.destination); src.start(0);
-    if (!silentEl) { silentEl = new Audio(SILENT); silentEl.loop = true; silentEl.setAttribute("playsinline", ""); silentEl.preload = "auto"; }
-    var pr = silentEl.play(); if (pr && pr.catch) pr.catch(function () {});
+    echoEl.currentTime = dryEl.currentTime;
+    var a = dryEl.play(), b = echoEl.play();
+    playing = true; paintButtons();
+    Promise.all([a, b].map(function (x) { return x && x.then ? x : Promise.resolve(); })).then(function () { stopListening(); },
+      function () { dryEl.pause(); echoEl.pause(); playing = false; paintButtons(); }); // the browser said no; wait for the next tap
   }
-  function setPlaying(on) {
-    if (on) unlock(); else initAudio();
-    if (!ctx) return;
-    if (on) {
-      if (!timer) { nextTime = ctx.currentTime + 0.06; startedAt = nextTime; step = 0; timer = setInterval(schedule, 25); }
-      master.gain.cancelScheduledValues(ctx.currentTime);
-      master.gain.setTargetAtTime(0.9, ctx.currentTime, 0.05);
-    } else {
-      master.gain.setTargetAtTime(0.0, ctx.currentTime, 0.05);
-      if (silentEl) silentEl.pause();
-      setTimeout(function () { if (!playing && timer) { clearInterval(timer); timer = null; } }, 300);
-    }
-    playing = on; paintButtons();
-  }
-  function setSynced(on) {
-    synced = on;
-    if (ctx) {
-      var t = ctx.currentTime;
-      // slide the echo copy into the dry signal: the pitch-bend is the "snap"
-      delay.delayTime.cancelScheduledValues(t);
-      delay.delayTime.setValueAtTime(delay.delayTime.value, t);
-      delay.delayTime.linearRampToValueAtTime(on ? 0.0 : ECHO, t + 0.7);
-    }
-    paintButtons();
-  }
+  function stop() { dryEl.pause(); echoEl.pause(); playing = false; pending = false; paintButtons(); }
+  function setPlaying(on) { on ? start() : stop(); }
+  function setSynced(on) { synced = on; applyMute(); paintButtons(); }
+  function audioTime() { return dryEl.currentTime || 0; }
 
   var soundBtn = document.getElementById("soundBtn"), soundLbl = document.getElementById("soundLbl");
   var playBtn = document.getElementById("labPlay"), sws = Array.prototype.slice.call(document.querySelectorAll(".sync-switch"));
@@ -97,19 +95,18 @@
   function toggle() { userStopped = playing; setPlaying(!playing); }
   if (soundBtn) soundBtn.addEventListener("click", toggle);
   if (playBtn) playBtn.addEventListener("click", toggle);
-  sws.forEach(function (sw) { sw.addEventListener("click", function () { setSynced(!synced); if (!playing) { userStopped = false; setPlaying(true); } }); });
-  // Browsers only allow sound after a tap or key press, so the beat starts on the first one anywhere on the page.
-  // touchstart/pointerdown don't count as a tap for audio on iOS; touchend, pointerup and click do.
-  var FIRST = ["touchend", "pointerup", "click", "keydown"];
+  sws.forEach(function (sw) { sw.addEventListener("click", function () { setSynced(!synced); if (!playing) { userStopped = false; start(); } }); });
+  // Start the beat on the first thing the visitor does. Taps, clicks and keys always count. Scrolling
+  // counts on desktop once the page has had any click, but phones never allow sound from a scroll alone,
+  // so on a phone the first tap starts it. Keep trying until the browser actually lets it play.
+  var FIRST = ["touchend", "pointerup", "click", "keydown", "touchstart", "pointerdown", "wheel", "scroll"];
   function firstTouch(e) {
-    if (e.target.closest && e.target.closest("[data-audio-ctl]")) return;
-    if (userStopped) return done();
-    if (!playing) setPlaying(true); else unlock();
-    if (ctx && ctx.state === "running") done();
-    else if (ctx) ctx.resume().then(function () { if (ctx.state === "running") done(); }, function () {});
+    if (e.target && e.target.closest && e.target.closest("[data-audio-ctl]")) return;
+    if (userStopped) return stopListening();
+    start();
   }
-  function done() { FIRST.forEach(function (t) { removeEventListener(t, firstTouch, true); }); }
-  FIRST.forEach(function (t) { addEventListener(t, firstTouch, true); });
+  function stopListening() { FIRST.forEach(function (t) { removeEventListener(t, firstTouch, { capture: true, passive: true }); }); }
+  FIRST.forEach(function (t) { addEventListener(t, firstTouch, { capture: true, passive: true }); });
 
   /* ---------------- lanes ---------------- */
   // amplitude of the beat at time t (seconds), same pattern the synth plays
@@ -155,10 +152,8 @@
     var g = hero.getContext("2d"), w = hero.width, h = hero.height;
     g.clearRect(0, 0, w, h);
     var level = 0;
-    if (analyser && playing) {
-      if (!freq) freq = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteFrequencyData(freq);
-      for (var i = 0; i < 24; i++) level += freq[i]; level = level / (24 * 255);
+    if (playing) {
+      level = Math.min(1, amp(now) * 0.8);
     }
     var lines = 22, gr = grad(g, w);
     g.strokeStyle = gr; g.lineWidth = 1.2 * DPR;
@@ -187,7 +182,11 @@
     var dt = Math.min(0.05, (ms - last) / 1000); last = ms;
     var now = (ms - t0) / 1000;
     // when audio runs, lock lanes to the audio clock
-    if (ctx && playing) now = ctx.currentTime - startedAt;
+    if (playing) {
+      now = audioTime();
+      // keep the two loops locked together
+      if (Math.abs(echoEl.currentTime - dryEl.currentTime) > 0.06) echoEl.currentTime = dryEl.currentTime;
+    }
     var target = synced ? LAG : 0;
     pcShift += (target - pcShift) * Math.min(1, dt * 3.2);
     if (lanes[0]) drawLane(lanes[0], now, pcShift, false);
