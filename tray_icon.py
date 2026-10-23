@@ -84,9 +84,10 @@ def run_tray(config, on_quit=None):
             from diagnostics import export_diagnostics_zip, open_diagnostics_email, SUPPORT_EMAIL
             path = export_diagnostics_zip()
             open_diagnostics_email(path)
-            msg = (f"Diagnostics saved to your Desktop:\n{path.name}\n\n"
-                   f"An email to {SUPPORT_EMAIL} should have opened -- "
-                   f"just attach that file and hit send.")
+            msg = (f"Diagnostics saved:\n{path}\n\n"
+                   f"A folder window shows the file. Email it to {SUPPORT_EMAIL}. "
+                   f"If no email window opened, you have no email app set up "
+                   f"-- just attach the file in Gmail or any webmail.")
         except Exception as e:
             msg = f"Couldn't create the diagnostics file: {e}"
         if sys.platform == "darwin":

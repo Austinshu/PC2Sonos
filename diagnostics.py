@@ -246,15 +246,49 @@ def system_snapshot():
     return "\n".join(lines)
 
 
+def _desktop_dir():
+    """The Desktop folder the user actually sees. %USERPROFILE%\\Desktop is
+    wrong when OneDrive (or a policy) has redirected it, which left the zip
+    somewhere the user never looked."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import uuid
+            buf = ctypes.c_wchar_p()
+            # FOLDERID_Desktop
+            guid = (ctypes.c_byte * 16)(
+                *uuid.UUID("B4BFCC3A-DB2C-424C-B029-7FE99A87C641").bytes_le)
+            if ctypes.windll.shell32.SHGetKnownFolderPath(
+                    ctypes.byref(guid), 0, None, ctypes.byref(buf)) == 0 and buf.value:
+                p = Path(buf.value)
+                ctypes.windll.ole32.CoTaskMemFree(buf)
+                if p.exists():
+                    return p
+        except Exception:
+            pass
+    desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
+    return desktop if desktop.exists() else Path.home()
+
+
+def reveal_in_file_manager(path):
+    """Best-effort: show the saved zip in Explorer/Finder so the user can
+    find it even if the mail client never opens."""
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", f"/select,{path}"])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(path)])
+    except Exception as e:
+        _log(f"[diagnostics] couldn't reveal file: {e}")
+
+
 def export_diagnostics_zip():
     """Bundles a fresh snapshot + the running log + config into one zip
     on the Desktop and returns its path. This is the one file a random
     person on the internet can hand back to us when something's wrong
     -- without it, troubleshooting a machine we've never touched means
     guessing blind."""
-    desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
-    if not desktop.exists():
-        desktop = Path.home()
+    desktop = _desktop_dir()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = desktop / f"PC2Sonos-Diagnostics-{stamp}.zip"
 
@@ -290,6 +324,7 @@ def open_diagnostics_email(zip_path):
     uri = (f"mailto:{SUPPORT_EMAIL}"
            f"?subject={urllib.parse.quote(subject)}"
            f"&body={urllib.parse.quote(body)}")
+    reveal_in_file_manager(zip_path)
     try:
         if sys.platform == "win32":
             os.startfile(uri)  # noqa

@@ -3,13 +3,14 @@
 import audioop
 import io
 import queue
+import re
 import secrets
 import struct
 import sys
 import threading
 import time
 
-from flask import Flask, Response, jsonify, render_template_string, request
+from flask import Flask, Response, jsonify, render_template_string, request, send_file
 from werkzeug.utils import secure_filename
 
 from audio_engine import (CHUNK, broadcaster, list_output_devices, list_input_devices,
@@ -721,9 +722,8 @@ DASHBOARD_HTML = """
     <h3>Export Diagnostics?</h3>
     <p>This saves a diagnostics file (system info, the app log, and your
        settings &mdash; no personal files, no browsing history) to your
-       Desktop, then opens an email pre-addressed to
-       <strong>austin1235@gmail.com</strong> so you can attach it and send
-       it yourself if you want help. <strong>Nothing leaves your
+       Desktop and shows it to you. You can then email it to
+       <strong>austin1235@gmail.com</strong> yourself if you want help. <strong>Nothing leaves your
        computer unless you choose to hit send.</strong></p>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="cancelExportDiag()">Cancel</button>
@@ -1272,9 +1272,31 @@ async function confirmExportDiag(){
   try {
     const res = await fetch('/api/diagnostics', {method:'POST'});
     const data = await res.json();
-    el.textContent = data.ok
-      ? ('Saved ' + data.filename + ' to your Desktop and opened an email to ' + data.email + ' -- attach it and hit send.')
-      : ('Failed: ' + data.error);
+    if (data.ok) {
+      el.innerHTML = '';
+      const subj = encodeURIComponent('PC2Sonos Diagnostics');
+      const body = encodeURIComponent('Attach the file ' + data.filename + ' (saved at ' + data.path + ').')
+                   + '%0A%0AWhat is not working:%0A';
+      const to = encodeURIComponent(data.email);
+      const mk = (href, text, newTab) => {
+        const a = document.createElement('a');
+        a.href = href; a.textContent = text; a.style.marginRight = '14px';
+        if (newTab) { a.target = '_blank'; a.rel = 'noopener'; }
+        return a;
+      };
+      const msg = document.createElement('div');
+      msg.textContent = 'Saved ' + data.path + ' (a folder window should show it). Send that file to ' +
+                        data.email + ' using any of these:';
+      const links = document.createElement('div');
+      links.style.marginTop = '6px';
+      links.append(
+        mk('/api/diagnostics/download/' + encodeURIComponent(data.filename), 'Download the file'),
+        mk('https://mail.google.com/mail/?view=cm&to=' + to + '&su=' + subj + '&body=' + body, 'Write it in Gmail', true),
+        mk('mailto:' + data.email + '?subject=' + subj + '&body=' + body, 'Open my email app'));
+      el.append(msg, links);
+    } else {
+      el.textContent = 'Failed: ' + data.error;
+    }
   } catch (e) {
     el.textContent = 'Failed: ' + e;
   }
@@ -2147,12 +2169,28 @@ def api_diagnostics():
     # same bundle the tray icon's "Export Diagnostics..." makes -- exposed
     # here too since plenty of people never right-click the tray icon.
     try:
-        from diagnostics import export_diagnostics_zip, open_diagnostics_email, SUPPORT_EMAIL
+        from diagnostics import export_diagnostics_zip, reveal_in_file_manager, SUPPORT_EMAIL
         path = export_diagnostics_zip()
-        open_diagnostics_email(path)
+        # Don't open a mail app here: plenty of PCs have none set up, and
+        # the empty window that results looks like a broken button. The
+        # dashboard offers mail / Gmail / download choices instead.
+        reveal_in_file_manager(path)
         return jsonify({"ok": True, "path": str(path), "filename": path.name, "email": SUPPORT_EMAIL})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
+
+
+@app.route("/api/diagnostics/download/<name>")
+def api_diagnostics_download(name):
+    # fallback for people with no mail app set up: download the zip from
+    # the browser. Only files this app made, from the Desktop folder.
+    from diagnostics import _desktop_dir
+    if not re.fullmatch(r"PC2Sonos-Diagnostics-\d{8}-\d{6}\.zip", name):
+        return "not found", 404
+    p = _desktop_dir() / name
+    if not p.exists():
+        return "not found", 404
+    return send_file(str(p), as_attachment=True, download_name=name)
 
 
 def wav_header(sample_rate, channels, sample_width):
