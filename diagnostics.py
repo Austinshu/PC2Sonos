@@ -50,8 +50,8 @@ SUPPORT_EMAIL = "austin1235@gmail.com"
 # developer. Left empty until it's deployed; the token is NOT a secret (it's
 # in the exe), it just keeps casual drive-by posts out. No email credentials
 # live in the app -- those stay in the Worker's secrets.
-DIAG_UPLOAD_URL = ""
-DIAG_UPLOAD_TOKEN = ""
+DIAG_UPLOAD_URL = "https://pc2sonos-diagnostics.austin1235.workers.dev"
+DIAG_UPLOAD_TOKEN = "d0enf3Nv1inKtTUxvNwNiX4ifQKIne0B"
 
 
 def _log(msg):
