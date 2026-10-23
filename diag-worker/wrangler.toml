@@ -1,0 +1,7 @@
+name = "pc2sonos-diagnostics"
+main = "worker.js"
+compatibility_date = "2024-09-01"
+
+[vars]
+TO_EMAIL = "austin1235@gmail.com"
+APP_TOKEN = "CHANGE-ME-then-put-the-same-value-in-diagnostics.py"

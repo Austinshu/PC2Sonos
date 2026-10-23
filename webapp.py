@@ -722,9 +722,10 @@ DASHBOARD_HTML = """
     <h3>Export Diagnostics?</h3>
     <p>This saves a diagnostics file (system info, the app log, and your
        settings &mdash; no personal files, no browsing history) to your
-       Desktop and shows it to you. You can then email it to
-       <strong>austin1235@gmail.com</strong> yourself if you want help. <strong>Nothing leaves your
-       computer unless you choose to hit send.</strong></p>
+       Desktop, then <strong>sends it to the PC2Sonos developer
+       (austin1235@gmail.com)</strong> so they can help you. It contains your
+       PC's LAN IP and Sonos speaker names, and is sent only when you click
+       Accept. If sending fails, you'll get the file and other ways to send it.</p>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="cancelExportDiag()">Cancel</button>
       <button onclick="confirmExportDiag()">Accept</button>
@@ -1272,7 +1273,9 @@ async function confirmExportDiag(){
   try {
     const res = await fetch('/api/diagnostics', {method:'POST'});
     const data = await res.json();
-    if (data.ok) {
+    if (data.ok && data.sent) {
+      el.textContent = 'Sent! The diagnostics were emailed to the developer. A copy is saved at ' + data.path + '.';
+    } else if (data.ok) {
       el.innerHTML = '';
       const subj = encodeURIComponent('PC2Sonos Diagnostics');
       const body = encodeURIComponent('Attach the file ' + data.filename + ' (saved at ' + data.path + ').')
@@ -1285,7 +1288,7 @@ async function confirmExportDiag(){
         return a;
       };
       const msg = document.createElement('div');
-      msg.textContent = 'Saved ' + data.path + ' (a folder window should show it). Send that file to ' +
+      msg.textContent = "Couldn't send it automatically (" + (data.send_error || 'unknown') + "). Saved " + data.path + ' (a folder window should show it). Send that file to ' +
                         data.email + ' using any of these:';
       const links = document.createElement('div');
       links.style.marginTop = '6px';
@@ -2169,13 +2172,16 @@ def api_diagnostics():
     # same bundle the tray icon's "Export Diagnostics..." makes -- exposed
     # here too since plenty of people never right-click the tray icon.
     try:
-        from diagnostics import export_diagnostics_zip, reveal_in_file_manager, SUPPORT_EMAIL
+        from diagnostics import export_diagnostics_zip, reveal_in_file_manager, send_diagnostics, SUPPORT_EMAIL
         path = export_diagnostics_zip()
+        sent, send_err = send_diagnostics(path)
         # Don't open a mail app here: plenty of PCs have none set up, and
         # the empty window that results looks like a broken button. The
         # dashboard offers mail / Gmail / download choices instead.
-        reveal_in_file_manager(path)
-        return jsonify({"ok": True, "path": str(path), "filename": path.name, "email": SUPPORT_EMAIL})
+        if not sent:
+            reveal_in_file_manager(path)
+        return jsonify({"ok": True, "path": str(path), "filename": path.name, "email": SUPPORT_EMAIL,
+                        "sent": sent, "send_error": send_err})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
 

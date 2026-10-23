@@ -46,6 +46,13 @@ from config import APP_DIR, CONFIG_PATH, config
 # open_diagnostics_email below) -- nothing here sends anything on its own.
 SUPPORT_EMAIL = "austin1235@gmail.com"
 
+# The relay in diag-worker/ (a Cloudflare Worker) that emails the zip to the
+# developer. Left empty until it's deployed; the token is NOT a secret (it's
+# in the exe), it just keeps casual drive-by posts out. No email credentials
+# live in the app -- those stay in the Worker's secrets.
+DIAG_UPLOAD_URL = ""
+DIAG_UPLOAD_TOKEN = ""
+
 
 def _log(msg):
     print(msg, flush=True)
@@ -302,6 +309,29 @@ def export_diagnostics_zip():
         if CONFIG_PATH.exists():
             z.write(CONFIG_PATH, arcname="config.json")
     return out_path
+
+
+def send_diagnostics(zip_path, note=""):
+    """POST the zip to the relay so it lands in the developer's inbox with
+    no mail app involved. Returns (ok, error_text). Only ever called after
+    the person clicked Accept on a dialog that says it will be sent."""
+    if not DIAG_UPLOAD_URL:
+        return False, "sending isn't set up in this build"
+    try:
+        import urllib.request
+        from version import VERSION
+        req = urllib.request.Request(
+            DIAG_UPLOAD_URL, data=Path(zip_path).read_bytes(), method="POST",
+            headers={"X-PC2Sonos-Token": DIAG_UPLOAD_TOKEN,
+                     "X-PC2Sonos-Filename": Path(zip_path).name,
+                     "X-PC2Sonos-Version": VERSION,
+                     "X-PC2Sonos-Note": urllib.parse.quote(note)[:300],
+                     "Content-Type": "application/zip",
+                     "User-Agent": f"PC2Sonos/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return (r.status == 200), (None if r.status == 200 else f"HTTP {r.status}")
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 
 def open_diagnostics_email(zip_path):

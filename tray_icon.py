@@ -68,11 +68,9 @@ def run_tray(config, on_quit=None):
             confirm = (
                 "This saves a diagnostics file (system info, the app log, "
                 "and your settings -- no personal files, no browsing "
-                f"history) to your Desktop, then opens an email pre-"
-                f"addressed to {SUPPORT_EMAIL} so you can attach it and "
-                "send it yourself if you want help.\n\n"
-                "Nothing leaves your computer unless you choose to hit "
-                "send.\n\nClick OK to continue, or Cancel to back out."
+                f"history) to your Desktop, then sends it to the PC2Sonos "
+                f"developer ({SUPPORT_EMAIL}) so they can help you.\n\n"
+                "Click OK to send it, or Cancel to back out."
             )
             if ctypes.windll.user32.MessageBoxW(
                     0, confirm, "Export Diagnostics?", MB_OKCANCEL) != IDOK:
@@ -81,13 +79,18 @@ def run_tray(config, on_quit=None):
             pass  # no ctypes (e.g. non-Windows test run) -- just proceed
 
         try:
-            from diagnostics import export_diagnostics_zip, open_diagnostics_email, SUPPORT_EMAIL
+            from diagnostics import (export_diagnostics_zip, open_diagnostics_email,
+                                     send_diagnostics, SUPPORT_EMAIL)
             path = export_diagnostics_zip()
-            open_diagnostics_email(path)
-            msg = (f"Diagnostics saved:\n{path}\n\n"
-                   f"A folder window shows the file. Email it to {SUPPORT_EMAIL}. "
-                   f"If no email window opened, you have no email app set up "
-                   f"-- just attach the file in Gmail or any webmail.")
+            sent, err = send_diagnostics(path)
+            if sent:
+                msg = f"Sent to the developer. A copy is saved at:\n{path}"
+            else:
+                open_diagnostics_email(path)
+                msg = (f"Couldn't send it automatically ({err}).\n\nSaved:\n{path}\n\n"
+                       f"A folder window shows the file. Email it to {SUPPORT_EMAIL}. "
+                       f"If no email window opened, you have no email app set up "
+                       f"-- just attach the file in Gmail or any webmail.")
         except Exception as e:
             msg = f"Couldn't create the diagnostics file: {e}"
         if sys.platform == "darwin":
