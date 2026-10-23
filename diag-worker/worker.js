@@ -38,6 +38,7 @@ export default {
         attachments: [{ filename: name, content: btoa(bin) }],
       }),
     });
-    return r.ok ? new Response("ok") : new Response("mail failed", { status: 502 });
+    if (r.ok) return new Response("ok");
+    return new Response("mail failed: " + (await r.text()).slice(0, 300), { status: 502 });
   },
 };
