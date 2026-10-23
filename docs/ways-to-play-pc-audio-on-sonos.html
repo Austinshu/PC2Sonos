@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ways to play PC audio on Sonos: line-in, AirPlay and apps compared</title>
+<meta name="description" content="Compare the ways to get your computer&#x27;s sound onto Sonos: a line-in cable, AirPlay from a Mac, the Sonos app, or the free PC2Sonos app.">
+<link rel="canonical" href="https://austinshu.github.io/PC2Sonos/ways-to-play-pc-audio-on-sonos.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="PC2Sonos">
+<meta property="og:title" content="Ways to play PC audio on Sonos: line-in, AirPlay and apps compared">
+<meta property="og:description" content="Compare the ways to get your computer&#x27;s sound onto Sonos: a line-in cable, AirPlay from a Mac, the Sonos app, or the free PC2Sonos app.">
+<meta property="og:url" content="https://austinshu.github.io/PC2Sonos/ways-to-play-pc-audio-on-sonos.html">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#000000">
+<link rel="stylesheet" href="style.css?v=6">
+<script type="application/ld+json">{"@context": "https://schema.org", "@graph": [{"@type": "Article", "headline": "Ways to play your computer's audio on Sonos, compared", "description": "Compare the ways to get your computer's sound onto Sonos: a line-in cable, AirPlay from a Mac, the Sonos app, or the free PC2Sonos app.", "url": "https://austinshu.github.io/PC2Sonos/ways-to-play-pc-audio-on-sonos.html", "dateModified": "2026-09-28", "publisher": {"@type": "Organization", "name": "PC2Sonos", "url": "https://austinshu.github.io/PC2Sonos/"}, "about": {"@type": "SoftwareApplication", "name": "PC2Sonos", "url": "https://austinshu.github.io/PC2Sonos/"}}, {"@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home", "item": "https://austinshu.github.io/PC2Sonos/"}, {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://austinshu.github.io/PC2Sonos/guides.html"}, {"@type": "ListItem", "position": 3, "name": "Ways compared", "item": "https://austinshu.github.io/PC2Sonos/ways-to-play-pc-audio-on-sonos.html"}]}]}</script>
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="index.html">PC2Sonos</a>
+  <nav><a href="index.html">Home</a><a href="download.html">Download</a><a href="windows.html">Windows</a><a href="mac.html">Mac</a><a href="guides.html" aria-current="page">Guides</a><a href="faq.html">FAQ</a></nav>
+</div></header>
+<main><div class="wrap">
+<p class="crumbs"><a href="index.html">Home</a> / <a href="guides.html">Guides</a> / Ways compared</p>
+<h1>Ways to play your computer&#x27;s audio on Sonos, compared</h1>
+<p class="lead">There are four common ways to get sound from a computer to Sonos. Which one fits depends on your speakers, your computer, and whether you want your desk speakers playing too.</p>
+
+<div class="table"><table>
+<thead><tr><th>Method</th><th>Works with</th><th>All computer sound?</th><th>Desk speakers in sync?</th></tr></thead>
+<tbody>
+<tr><td>Line-in cable</td><td>Only Sonos models with a line-in jack</td><td>Yes</td><td>No</td></tr>
+<tr><td>AirPlay from a Mac</td><td>AirPlay-capable Sonos models, Mac only</td><td>Yes</td><td>No</td></tr>
+<tr><td>Sonos app</td><td>Any Sonos</td><td>No, music services only</td><td>Not applicable</td></tr>
+<tr><td>PC2Sonos</td><td>Any Sonos, Windows or Mac</td><td>Yes, or chosen apps on Windows</td><td>Yes</td></tr>
+</tbody></table></div>
+
+<h2>Line-in cable</h2>
+<p>Some Sonos models have an audio input. Run a cable from your computer's headphone jack and select line-in in the Sonos app. It's reliable, but the speaker has to be near the computer, and most Sonos speakers have no input at all.</p>
+
+<h2>AirPlay from a Mac</h2>
+<p>If your Sonos supports AirPlay, a Mac can send its sound to it from the Sound menu. It doesn't work from Windows, and your Mac's own speakers can't play alongside without echo.</p>
+
+<h2>The Sonos app</h2>
+<p>The Sonos app plays Spotify, radio and other services directly on the speaker, which is great for music. It can't play your computer's own sound: games, browser tabs, video calls or desktop apps.</p>
+
+<h2>PC2Sonos</h2>
+<p>PC2Sonos streams everything your computer plays to any Sonos on your network, over Wi-Fi, with no cable. It delays your desk speakers to match so both can play at once, and it's free with no account.</p>
+
+<div class="buttons">
+  <a class="btn" id="dl" href="download.html">Download free</a>
+  <a class="btn secondary" href="https://github.com/Austinshu/PC2Sonos">View on GitHub</a>
+</div>
+<p class="note" id="dlnote">Windows 10 or newer, macOS 12 or newer. No account needed.</p>
+<script>
+(function () {
+  var ua = navigator.userAgent || "", btn = document.getElementById("dl"), note = document.getElementById("dlnote");
+  if (/Windows/i.test(ua)) {
+    btn.href = "https://github.com/Austinshu/PC2Sonos/releases/latest/download/PC2Sonos-Setup.exe"; btn.textContent = "Download for Windows";
+    note.innerHTML = 'Free for Windows 10 and 11. On a Mac? <a href="download.html">Get the Mac version</a>.';
+  } else if (/Macintosh|Mac OS X/i.test(ua)) {
+    btn.href = "download.html#mac"; btn.textContent = "Download for Mac";
+  }
+})();
+</script>
+
+<p><a href="sonos-computer-speakers.html">Set up Sonos as computer speakers</a> · <a href="faq.html">FAQ</a></p>
+</div></main>
+<footer class="site"><div class="wrap">
+  PC2Sonos is free and open source. <a href="https://github.com/Austinshu/PC2Sonos">Source on GitHub</a> ·
+  <a href="https://github.com/Austinshu/PC2Sonos/releases">Release notes</a> ·
+  <a href="guides.html">Guides</a> ·
+  <a href="https://buy.stripe.com/eVq7sF9Iv4LjfeM4JScbC01">Support the project</a><br>
+  PC2Sonos is an independent project and isn't affiliated with or endorsed by Sonos, Inc.
+</div></footer>
+</body>
+</html>
