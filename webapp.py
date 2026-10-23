@@ -288,6 +288,23 @@ STYLE_BLOCK = """
     font-size:13px; padding:7px 15px; border-radius:8px; cursor:pointer;
     transition:filter .12s ease, transform .08s ease;
   }
+  .btn-report { display:block; width:100%; box-sizing:border-box; padding:22px 16px; font-size:20px; font-weight:700; border-radius:12px; letter-spacing:.2px; }
+  .btn-report-gh { display:block; width:100%; box-sizing:border-box; margin-top:10px; padding:13px 16px; text-align:center; font-size:14px; font-weight:600; color:#ddd; text-decoration:none; background:#222; border:1px solid #3a3a3a; border-radius:10px; }
+  .btn-report-gh:hover { background:#2a2a2a; }
+  /* Party Mode: floats in the empty space to the right of the page on wide
+     screens, so it never crowds the rest; sits at the bottom otherwise. */
+  .party-panel { margin-top:16px; }
+  @media (min-width:1700px) {
+    .party-panel { position:fixed; right:20px; top:96px; width:270px; margin:0; max-height:calc(100vh - 120px); overflow:auto; z-index:50; }
+  }
+  .party-row { display:flex; justify-content:space-between; align-items:center; font-size:14px; color:#ddd; margin-top:6px; }
+  .party-meter { position:relative; height:12px; background:#222; border-radius:99px; overflow:hidden; margin-top:4px; }
+  #partyFill { height:100%; width:0; background:#1db954; transition:width .3s ease; }
+  #partyMark { position:absolute; top:0; bottom:0; width:2px; background:#fff; opacity:.7; }
+  .party-help { margin-top:10px; font-size:12px; color:#bbb; line-height:1.5; }
+  .party-help summary { cursor:pointer; color:#1db954; font-weight:600; }
+  .party-help div { margin-top:8px; }
+  .party-lbl { font-size:12px; color:#ccc; margin:8px 0 2px 0; }
   button:hover { filter:brightness(1.12); }
   button:active { transform:scale(0.97); }
   button:disabled { filter:grayscale(0.6) brightness(0.8); cursor:default; }
@@ -583,8 +600,45 @@ DASHBOARD_HTML = """
     <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg></span>
     <span class="card-title">Troubleshooting</span>
   </div>
-  <button onclick="exportDiag()">Report a Problem</button>
+  <div style="color:#ccc; font-size:14px; margin:2px 0 14px 0;">Something not working right? Tell the developer what's happening and it gets sent straight to them, so they can help you.</div>
+  <button class="btn-report" onclick="exportDiag()">Report a Problem</button>
+  <a class="btn-report-gh" href="https://github.com/Austinshu/PC2Sonos/issues/new" target="_blank" rel="noopener">Or report it publicly on GitHub</a>
   <div id="diagResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
+</div>
+
+<div class="card party-panel" id="partyPanel">
+  <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg></span>
+    <span class="card-title">Party Mode</span>
+  </div>
+  <div class="card-desc">Listens to a microphone and turns the music up when the room gets loud, down when it quiets. 10 people stays gentle, 50 gets louder. The mic is only measured, never recorded or sent anywhere.</div>
+  <label class="party-row"><span>Use the microphone</span>
+    <span class="switch"><input type="checkbox" id="partyOn" onchange="toggleParty()"><span class="switch-track"></span></span></label>
+  <select id="partyMic" onchange="saveParty()" style="width:100%; margin:8px 0;"></select>
+  <div style="font-size:12px; color:#888;">Room loudness</div>
+  <div class="party-meter"><div id="partyFill"></div><div id="partyMark"></div></div>
+  <div id="partyStatus" style="font-size:12px; color:#aaa; margin:6px 0 10px 0;">Off</div>
+  <div class="party-lbl">Quietest room: <b id="partyMinVal">70</b>% volume</div>
+  <input type="range" min="20" max="200" id="partyMin" oninput="partyLbl(); paintRange(this)" onchange="saveParty()">
+  <div class="party-lbl">Full party: <b id="partyMaxVal">140</b>% volume</div>
+  <input type="range" min="50" max="300" id="partyMax" oninput="partyLbl(); paintRange(this)" onchange="saveParty()">
+  <div class="party-lbl">Counts as a full party at: <b id="partyFullVal">60</b></div>
+  <input type="range" min="10" max="95" id="partyFull" oninput="partyLbl(); paintRange(this)" onchange="saveParty()">
+  <div class="party-lbl">How far is the mic from the crowd?
+    <input type="number" id="partyDist" min="1" max="100" value="3" style="width:64px;" onchange="saveParty()"> feet
+    <span id="partyDistNote" style="color:#888;"></span></div>
+  <div class="party-lbl">Extra mic boost: <b id="partyBoostVal">0</b> dB</div>
+  <input type="range" min="0" max="30" id="partyBoost" oninput="partyLbl(); paintRange(this)" onchange="saveParty()">
+  <details class="party-help">
+    <summary>Where to put the mic, and making a far-away mic work</summary>
+    <div>
+      <b>Best spot:</b> in the middle of the crowd, about head height (a shelf, a stand, or a stair rail), 3 to 4 steps from the nearest speaker, and <b>not pointing at any speaker</b>. Point it toward where people stand or talk.<br>
+      <b>Avoid:</b> right next to a speaker (it will only hear the music and keep turning it up), inside a cupboard or pocket, or against a wall corner where sound builds up.<br>
+      <b>The mic has to sit far from the crowd?</b> Measure the distance in feet and type it into the box above. The app boosts the mic to make up for it (about +6 dB each time the distance doubles). Use <b>Extra mic boost</b> to fine-tune. It is a software boost up to +30 dB and only makes the app more sensitive; it never touches the music. Then watch Room loudness: with people talking it should reach about the white line, and in a quiet room it should sit near the bottom. If the bar is always full even when quiet, lower the boost.<br>
+      <b>Still too faint?</b> In Windows, open Settings &gt; System &gt; Sound &gt; your microphone &gt; Properties and raise <b>Input volume</b> to 100, and turn on <b>Microphone Boost</b> under Additional device properties &gt; Levels if it's there. A cheap USB or lavalier mic on a long cable, or a phone-style headset mic hung up in the room, also works far better than a laptop mic at the back.
+    </div>
+  </details>
+  <div style="font-size:11px; color:#777; margin-top:8px;">Turning this off puts the volume back where it was.</div>
 </div>
 
 </div>
@@ -1615,6 +1669,66 @@ setLocalEq();  // shows the warning immediately if a saved EQ band is already pa
 _updatePoll = setInterval(checkUpdate, 3000);
 setInterval(refresh, 4000);
 setInterval(loadLevel, 300);
+
+let _partyBusy = false;
+function partyLbl(){
+  document.getElementById('partyMinVal').textContent = document.getElementById('partyMin').value;
+  document.getElementById('partyMaxVal').textContent = document.getElementById('partyMax').value;
+  document.getElementById('partyFullVal').textContent = document.getElementById('partyFull').value;
+  document.getElementById('partyBoostVal').textContent = document.getElementById('partyBoost').value;
+  document.getElementById('partyMark').style.left = document.getElementById('partyFull').value + '%';
+}
+async function loadPartyMics(selected){
+  const sel = document.getElementById('partyMic');
+  try {
+    const r = await (await fetch('/api/party/mics')).json();
+    sel.innerHTML = '';
+    const d = document.createElement('option'); d.value = ''; d.textContent = 'Default microphone'; sel.appendChild(d);
+    r.mics.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
+    sel.value = selected || '';
+  } catch (e) {}
+}
+async function loadParty(first){
+  if (_partyBusy) return;
+  try {
+    const d = await (await fetch('/api/party')).json();
+    if (first) {
+      document.getElementById('partyMin').value = d.min_pct;
+      document.getElementById('partyMax').value = d.max_pct;
+      document.getElementById('partyFull').value = d.full_level;
+      document.getElementById('partyBoost').value = d.boost_db;
+      document.getElementById('partyDist').value = d.distance_ft;
+      ['partyMin','partyMax','partyFull','partyBoost'].forEach(i => paintRange(document.getElementById(i)));
+      partyLbl();
+      await loadPartyMics(d.mic);
+    }
+    document.getElementById('partyDistNote').textContent = d.total_boost_db > 0 ? ('→ boosting +' + d.total_boost_db + ' dB') : '';
+    document.getElementById('partyOn').checked = d.active;
+    document.getElementById('partyFill').style.width = d.level + '%';
+    document.getElementById('partyStatus').textContent = d.error
+      ? ("Couldn't use the microphone: " + d.error + " (check Windows' microphone privacy settings)")
+      : d.active ? ('Listening to ' + (d.device || 'microphone') + ' • volume ' + d.volume_pct + '%') : 'Off';
+  } catch (e) {}
+}
+async function toggleParty(){
+  _partyBusy = true;
+  try {
+    await fetch('/api/party', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: document.getElementById('partyOn').checked})});
+  } finally { _partyBusy = false; }
+  loadParty(false);
+}
+async function saveParty(){
+  const body = {mic: document.getElementById('partyMic').value,
+                min_pct: +document.getElementById('partyMin').value,
+                max_pct: +document.getElementById('partyMax').value,
+                full_level: +document.getElementById('partyFull').value,
+                boost_db: +document.getElementById('partyBoost').value,
+                distance_ft: +document.getElementById('partyDist').value};
+  await fetch('/api/party', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+}
+loadParty(true);
+setInterval(() => loadParty(false), 1000);
 </script>
 </body>
 </html>
@@ -1749,10 +1863,16 @@ def api_master_volume():
     setting that can stress speakers, so nothing that gets dragged around
     casually is allowed to move it; an earlier version that scaled it
     pushed a real boost to its 500% ceiling from a single press."""
-    global _master_volume_baseline
     data = request.get_json(force=True)
     percent = max(0, min(500, int(data.get("percent", 100))))
+    return jsonify({"ok": True, "local_volume_percent": apply_master_percent(percent)})
 
+
+def apply_master_percent(percent):
+    """The overall-volume scaling behind the "Scale everything together"
+    slider, also used by Party Mode. Returns the new PC-speaker percent."""
+    global _master_volume_baseline
+    percent = max(0, min(500, int(percent)))
     with _master_volume_lock:
         if _master_volume_baseline is None:
             _master_volume_baseline = {
@@ -1783,7 +1903,47 @@ def api_master_volume():
         if percent == 100:
             _master_volume_baseline = None
 
-    return jsonify({"ok": True, "local_volume_percent": new_volume_percent})
+    return new_volume_percent
+
+
+import party_mode
+party_mode.set_apply(apply_master_percent)
+
+
+@app.route("/api/party", methods=["GET", "POST"])
+def api_party():
+    """Party Mode (party_mode.py): GET = status + settings; POST = change
+    settings and/or switch it on/off. Always off after a restart."""
+    if request.method == "POST":
+        data = request.get_json(force=True)
+        for key, lo, hi in (("party_min_pct", 10, 300), ("party_max_pct", 10, 300),
+                            ("party_full_level", 10, 95), ("party_boost_db", 0, 30),
+                            ("party_distance_ft", 1, 100)):
+            if {"party_boost_db": "boost_db", "party_distance_ft": "distance_ft"}.get(key, key) in data:
+                config[key] = max(lo, min(hi, int(data[{"party_boost_db": "boost_db", "party_distance_ft": "distance_ft"}.get(key, key)])))
+        if config["party_max_pct"] < config["party_min_pct"]:
+            config["party_max_pct"] = config["party_min_pct"]
+        if "mic" in data:
+            config["party_mic"] = str(data["mic"])[:200]
+        save_config(config)
+        if "enabled" in data:
+            if data["enabled"]:
+                party_mode.start()
+            else:
+                party_mode.stop()
+    st = party_mode.get_status()
+    return jsonify({**st, "min_pct": config.get("party_min_pct", 70),
+                    "max_pct": config.get("party_max_pct", 140),
+                    "full_level": config.get("party_full_level", 60),
+                    "boost_db": config.get("party_boost_db", 0),
+                    "distance_ft": config.get("party_distance_ft", 3),
+                    "total_boost_db": round(party_mode.total_boost_db(), 1),
+                    "mic": config.get("party_mic", "")})
+
+
+@app.route("/api/party/mics")
+def api_party_mics():
+    return jsonify({"mics": [d["name"] for d in list_input_devices()]})
 
 
 @app.route("/api/level")

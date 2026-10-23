@@ -28,3 +28,4 @@ dist/
 *.dmg
 *.spec
 .DS_Store
+diag-worker/.wrangler/

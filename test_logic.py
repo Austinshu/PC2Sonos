@@ -1878,4 +1878,35 @@ print("  dismiss(donated=True) -> permanently suppressed OK")
 webapp.config["donated"] = False  # reset for anything running after this
 print("  OK")
 
+print("\n[Party Mode]")
+import numpy as np
+import party_mode
+assert party_mode.target_pct(0, 70, 140, 60) == 70, "silent room -> the minimum"
+assert party_mode.target_pct(60, 70, 140, 60) == 140, "full-party level -> the maximum"
+assert party_mode.target_pct(100, 70, 140, 60) == 140, "never above the maximum"
+assert abs(party_mode.target_pct(30, 70, 140, 60) - 105) < 1e-9, "halfway -> halfway"
+assert party_mode._step_toward(100, 140) == 100 + party_mode.MAX_STEP_PCT, "moves in small steps"
+assert party_mode._step_toward(100, 102) == 102, "a small gap is closed exactly"
+assert party_mode._step_toward(140, 70) == 140 - party_mode.MAX_STEP_PCT, "steps down too"
+assert party_mode._level_from_block(np.zeros(1024, dtype=np.int16)) == 0.0
+quiet = np.full(1024, 100, dtype=np.int16)
+lvl0 = party_mode._level_from_block(quiet)
+lvl20 = party_mode._level_from_block(quiet, 20.0)
+assert abs((lvl20 - lvl0) - 20.0 * (100.0 / 60.0)) < 0.5, "+20 dB = 20 dB more on the meter"
+assert party_mode.distance_boost_db(3) == 0 and party_mode.distance_boost_db(1) == 0
+assert abs(party_mode.distance_boost_db(6) - 6.02) < 0.05, "doubling the distance = +6 dB"
+assert abs(party_mode.distance_boost_db(30) - 20.0) < 0.01, "10x the distance = +20 dB"
+webapp.config["party_distance_ft"], webapp.config["party_boost_db"] = 100, 30
+assert party_mode.total_boost_db() == party_mode.MAX_TOTAL_BOOST_DB, "total boost is capped"
+print("  target mapping, stepping, distance and mic-boost math OK")
+_pc = webapp.app.test_client()
+_pd = _pc.post("/api/party", json={"min_pct": 50, "max_pct": 30, "boost_db": 99, "distance_ft": 9999, "full_level": 60}).get_json()
+assert _pd["max_pct"] >= _pd["min_pct"], "max can't be below min"
+assert _pd["boost_db"] == 30 and _pd["distance_ft"] == 100, "boost and distance are capped"
+assert "mics" in _pc.get("/api/party/mics").get_json()
+assert party_mode.get_status()["active"] is False, "off unless switched on"
+for _k, _v in (("party_min_pct", 70), ("party_max_pct", 140), ("party_boost_db", 0), ("party_distance_ft", 3)):
+    webapp.config[_k] = _v
+print("  /api/party clamps settings, stays off by default OK")
+
 print("\nALL LOGIC TESTS PASSED")

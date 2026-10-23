@@ -211,6 +211,14 @@ DEFAULT_CONFIG = {
     # (unix seconds, 0 = never) just throttles it to once a week otherwise.
     "donated": False,
     "last_donate_prompt_at": 0,
+    # Party Mode (party_mode.py): volume follows how loud the room is.
+    # Off after every restart; only these settings persist.
+    "party_mic": "",          # name substring; empty = the default microphone
+    "party_min_pct": 70,      # overall volume when the room is quiet
+    "party_max_pct": 140,     # overall volume once the room is at "full party"
+    "party_distance_ft": 3,   # how far the mic is from the crowd; far = boosted to compensate
+    "party_boost_db": 0,      # software mic boost (0-30 dB) for a far-away mic
+    "party_full_level": 60,   # room level (0-100) that counts as full party
 }
 
 _lock = threading.RLock()
