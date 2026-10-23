@@ -40,71 +40,10 @@ def run_tray(config, on_quit=None):
         webbrowser.open(f"http://127.0.0.1:{port}")
 
     def export_diagnostics(icon, item):
-        # the one thing a non-technical person on some machine we've
-        # never seen can actually hand back to us when something's
-        # wrong -- see diagnostics.py. Never sent anywhere by itself;
-        # it's up to the person to share the file if they want help.
-        # Ask first, plainly, before touching anything -- same consent
-        # gate the dashboard's "Export Diagnostics" button shows.
-        if sys.platform == "darwin":
-            # same consent gate, native macOS dialog
-            try:
-                from diagnostics import SUPPORT_EMAIL
-                from macos_app import ask
-                if ask("This saves a diagnostics file (system info, the app log, and your "
-                       "settings; no personal files, no browsing history) to your Desktop, "
-                       f"then opens an email pre-addressed to {SUPPORT_EMAIL} so you can attach "
-                       "it and send it yourself if you want help.\n\nNothing leaves your "
-                       "computer unless you choose to hit send.",
-                       ["Cancel", "Continue"], default="Continue") != "Continue":
-                    return
-            except Exception:
-                pass
-        try:
-            import ctypes
-            from diagnostics import SUPPORT_EMAIL
-            MB_OKCANCEL = 0x1
-            IDOK = 1
-            confirm = (
-                "This saves a diagnostics file (system info, the app log, "
-                "and your settings -- no personal files, no browsing "
-                f"history) to your Desktop, then sends it to the PC2Sonos "
-                f"developer ({SUPPORT_EMAIL}) so they can help you.\n\n"
-                "Click OK to send it, or Cancel to back out."
-            )
-            if ctypes.windll.user32.MessageBoxW(
-                    0, confirm, "Export Diagnostics?", MB_OKCANCEL) != IDOK:
-                return
-        except Exception:
-            pass  # no ctypes (e.g. non-Windows test run) -- just proceed
-
-        try:
-            from diagnostics import (export_diagnostics_zip, open_diagnostics_email,
-                                     send_diagnostics, SUPPORT_EMAIL)
-            path = export_diagnostics_zip()
-            sent, err = send_diagnostics(path)
-            if sent:
-                msg = f"Sent to the developer. A copy is saved at:\n{path}"
-            else:
-                open_diagnostics_email(path)
-                msg = (f"Couldn't send it automatically ({err}).\n\nSaved:\n{path}\n\n"
-                       f"A folder window shows the file. Email it to {SUPPORT_EMAIL}. "
-                       f"If no email window opened, you have no email app set up "
-                       f"-- just attach the file in Gmail or any webmail.")
-        except Exception as e:
-            msg = f"Couldn't create the diagnostics file: {e}"
-        if sys.platform == "darwin":
-            try:
-                from macos_app import ask
-                ask(msg, ["OK"])
-                return
-            except Exception:
-                pass
-        try:
-            import ctypes
-            ctypes.windll.user32.MessageBoxW(0, msg, "PC2Sonos Diagnostics", 0x40)
-        except Exception:
-            print(f"[diagnostics] {msg}")
+        # the dashboard's report form (describe the problem, optional reply
+        # email, explicit Send) is the one consent gate and the one place
+        # that sends -- see diagnostics.py. ?diag=1 opens it straight away.
+        webbrowser.open(f"http://127.0.0.1:{port}/?diag=1")
 
     def quit_app(icon, item):
         if on_quit is not None:

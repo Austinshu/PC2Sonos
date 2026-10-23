@@ -20,7 +20,10 @@ export default {
     const name = (request.headers.get("X-PC2Sonos-Filename") || "PC2Sonos-Diagnostics.zip")
       .replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
     const version = (request.headers.get("X-PC2Sonos-Version") || "?").slice(0, 20);
-    const note = (request.headers.get("X-PC2Sonos-Note") || "").slice(0, 300);
+    const dec = (v) => { try { return decodeURIComponent(v || ""); } catch { return ""; } };
+    const note = dec(request.headers.get("X-PC2Sonos-Note")).slice(0, 1500);
+    const reply = dec(request.headers.get("X-PC2Sonos-Reply")).trim().slice(0, 200);
+    const replyOk = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(reply);
 
     let bin = "";
     const bytes = new Uint8Array(buf);

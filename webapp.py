@@ -346,6 +346,8 @@ STYLE_BLOCK = """
   .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:1000; }
   .modal-overlay.show { display:flex; }
   .modal-box { background:#1a1a1a; border:1px solid #2a2a2a; border-radius:14px; padding:22px; max-width:380px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.6); }
+  .modal-box textarea, .modal-box input[type=text] { width:100%; box-sizing:border-box; margin:0 0 10px 0; padding:9px 10px; background:#111; color:#eee; border:1px solid #333; border-radius:8px; font-size:13px; font-family:inherit; }
+  .modal-box textarea { resize:vertical; }
   .modal-box h3 { margin:0 0 10px 0; font-size:16px; }
   .modal-box p { font-size:13px; color:#ccc; line-height:1.5; margin:0 0 18px 0; }
   .modal-actions { display:flex; justify-content:flex-end; gap:10px; }
@@ -581,7 +583,7 @@ DASHBOARD_HTML = """
     <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg></span>
     <span class="card-title">Troubleshooting</span>
   </div>
-  <button onclick="exportDiag()">Export Diagnostics</button>
+  <button onclick="exportDiag()">Report a Problem</button>
   <div id="diagResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
 </div>
 
@@ -719,16 +721,18 @@ DASHBOARD_HTML = """
 
 <div class="modal-overlay" id="diagModal">
   <div class="modal-box">
-    <h3>Export Diagnostics?</h3>
-    <p>This saves a diagnostics file (system info, the app log, and your
-       settings &mdash; no personal files, no browsing history) to your
-       Desktop, then <strong>sends it to the PC2Sonos developer
-       (austin1235@gmail.com)</strong> so they can help you. It contains your
-       PC's LAN IP and Sonos speaker names, and is sent only when you click
-       Accept. If sending fails, you'll get the file and other ways to send it.</p>
+    <h3>Report a problem</h3>
+    <p>Tell the developer what's going wrong. Clicking Send saves a diagnostics
+       file (system info, the app log, and your settings &mdash; no personal
+       files, no browsing history) to your Desktop and
+       <strong>sends it with your message to the PC2Sonos developer</strong>.
+       It includes your PC's LAN IP and Sonos speaker names. Nothing is sent
+       until you click Send.</p>
+    <textarea id="diagNote" rows="5" maxlength="1500" placeholder="What's happening? e.g. audio plays for 2 seconds, then stutters and stops"></textarea>
+    <input type="text" id="diagEmail" placeholder="Your email, so I can reply (optional)" autocomplete="email">
     <div class="modal-actions">
       <button class="btn-cancel" onclick="cancelExportDiag()">Cancel</button>
-      <button onclick="confirmExportDiag()">Accept</button>
+      <button onclick="confirmExportDiag()">Send</button>
     </div>
   </div>
 </div>
@@ -1263,15 +1267,23 @@ async function setCaptureMethod(){
 function exportDiag(){
   document.getElementById('diagModal').classList.add('show');
 }
+if (new URLSearchParams(location.search).get('diag') === '1') exportDiag();
 function cancelExportDiag(){
   document.getElementById('diagModal').classList.remove('show');
 }
 async function confirmExportDiag(){
+  const note = document.getElementById('diagNote').value.trim();
+  const email = document.getElementById('diagEmail').value.trim();
+  if (email && !/^[^ @]+@[^ @]+[.][^ @]+$/.test(email)) {
+    alert("That email address doesn't look right. Fix it or leave it blank.");
+    return;
+  }
   document.getElementById('diagModal').classList.remove('show');
   const el = document.getElementById('diagResult');
   el.textContent = 'Generating...';
   try {
-    const res = await fetch('/api/diagnostics', {method:'POST'});
+    const res = await fetch('/api/diagnostics', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({note: note, email: email})});
     const data = await res.json();
     if (data.ok && data.sent) {
       el.textContent = 'Sent! The diagnostics were emailed to the developer. A copy is saved at ' + data.path + '.';
@@ -2173,8 +2185,11 @@ def api_diagnostics():
     # here too since plenty of people never right-click the tray icon.
     try:
         from diagnostics import export_diagnostics_zip, reveal_in_file_manager, send_diagnostics, SUPPORT_EMAIL
-        path = export_diagnostics_zip()
-        sent, send_err = send_diagnostics(path)
+        body = request.get_json(silent=True) or {}
+        note = str(body.get("note") or "")[:1500]
+        reply = str(body.get("email") or "").strip()[:200]
+        path = export_diagnostics_zip(note, reply)
+        sent, send_err = send_diagnostics(path, note, reply)
         # Don't open a mail app here: plenty of PCs have none set up, and
         # the empty window that results looks like a broken button. The
         # dashboard offers mail / Gmail / download choices instead.

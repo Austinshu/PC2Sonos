@@ -289,7 +289,7 @@ def reveal_in_file_manager(path):
         _log(f"[diagnostics] couldn't reveal file: {e}")
 
 
-def export_diagnostics_zip():
+def export_diagnostics_zip(note="", reply_email=""):
     """Bundles a fresh snapshot + the running log + config into one zip
     on the Desktop and returns its path. This is the one file a random
     person on the internet can hand back to us when something's wrong
@@ -304,6 +304,9 @@ def export_diagnostics_zip():
 
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("snapshot.txt", snapshot)
+        if note or reply_email:
+            z.writestr("user_report.txt",
+                       f"Reply email: {reply_email or '(not given)'}\n\n{note}\n")
         if log_path.exists():
             z.write(log_path, arcname="pc2sonos.log")
         if CONFIG_PATH.exists():
@@ -311,7 +314,7 @@ def export_diagnostics_zip():
     return out_path
 
 
-def send_diagnostics(zip_path, note=""):
+def send_diagnostics(zip_path, note="", reply_email=""):
     """POST the zip to the relay so it lands in the developer's inbox with
     no mail app involved. Returns (ok, error_text). Only ever called after
     the person clicked Accept on a dialog that says it will be sent."""
@@ -325,7 +328,8 @@ def send_diagnostics(zip_path, note=""):
             headers={"X-PC2Sonos-Token": DIAG_UPLOAD_TOKEN,
                      "X-PC2Sonos-Filename": Path(zip_path).name,
                      "X-PC2Sonos-Version": VERSION,
-                     "X-PC2Sonos-Note": urllib.parse.quote(note)[:300],
+                     "X-PC2Sonos-Note": urllib.parse.quote(note[:1500]),
+                     "X-PC2Sonos-Reply": urllib.parse.quote(reply_email[:200]),
                      "Content-Type": "application/zip",
                      "User-Agent": f"PC2Sonos/{VERSION}"})
         with urllib.request.urlopen(req, timeout=30) as r:
