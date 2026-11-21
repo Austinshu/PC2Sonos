@@ -176,6 +176,9 @@ DEFAULT_CONFIG = {
     # gets a unicast port-1400 sweep when no seed is reachable.
     "sonos_seed_ips": [],
     "sonos_scan_cidrs": [],
+    # Filled in automatically: speaker IPs reached last run, tried first at
+    # launch when multicast discovery finds nothing.
+    "last_known_speaker_ips": [],
     # Startup behavior -----------------------------------------------------
     # default_speaker_ip: if set, PC2Sonos talks to this one speaker
     # directly at launch instead of waiting for a discovery pass -- audio

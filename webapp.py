@@ -864,7 +864,7 @@ async function refresh(){
     const star = s.is_default ? '&#9733;' : '&#9734;';
     const starTitle = s.is_default ? 'Default speaker (click to unset)' : 'Set as default speaker';
     const health = s.dropout_count > 0
-      ? `<span style="flex-basis:100%; font-size:11px; color:#888;">&#9888; ${s.dropout_count} dropout${s.dropout_count === 1 ? '' : 's'} this session &mdash; last ${formatAgo(s.last_dropout_seconds_ago)}</span>`
+      ? `<span style="flex-basis:100%; font-size:11px; color:#888;">&#9888; ${s.dropout_count} dropout${s.dropout_count === 1 ? '' : 's'} this session &mdash; last ${formatAgo(s.last_dropout_seconds_ago)}${(s.dropout_count >= 3 && _streamQuality === 'full') ? ' &mdash; <b style="color:#f0b050;">cutting out? Try &ldquo;Reduced bandwidth&rdquo; under Sonos streaming quality.</b>' : ''}</span>`
       : '';
     div.innerHTML = `
       <span onclick="setDefault('${s.uid}', ${s.is_default})" title="${starTitle}"
@@ -1614,9 +1614,11 @@ async function setManageDefaultOutput(){
     ? 'PC2Sonos will set itself as the default output each time it starts.'
     : 'PC2Sonos will leave your default output alone when it starts.';
 }
+let _streamQuality = 'full';
 async function loadStreamQuality(){
   const res = await fetch('/api/stream_quality');
   const data = await res.json();
+  _streamQuality = data.quality;
   document.getElementById('streamQuality').value = data.quality;
 }
 async function setStreamQuality(){
@@ -1626,6 +1628,7 @@ async function setStreamQuality(){
   const res = await fetch('/api/stream_quality', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({quality})});
   const data = await res.json();
+  if (data.ok) _streamQuality = quality;
   el.textContent = data.ok ? 'Applied.' : ('Failed: ' + (data.error || 'unknown error'));
 }
 let sleepCountdownInterval = null;

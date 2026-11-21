@@ -107,6 +107,38 @@ def _wait_for_http(port, stop_event, timeout=20):
     return False
 
 
+class _StampedLog:
+    """Wraps the log file so each of PC2Sonos's own "[tag] message" lines
+    starts with the time. Without it a dropout in the log can't be matched
+    to anything else that happened (an app joining the mix, a resync).
+    Other lines (tracebacks, the web server's own already-dated request
+    lines) pass through untouched."""
+
+    def __init__(self, f):
+        self._f = f
+        self._lock = threading.Lock()
+        self._partial = ""
+
+    def write(self, s):
+        with self._lock:
+            self._partial += s
+            *lines, self._partial = self._partial.split("\n")
+            out = []
+            for line in lines:
+                if line.startswith("["):
+                    line = time.strftime("%H:%M:%S ") + line
+                out.append(line + "\n")
+            if out:
+                self._f.write("".join(out))
+        return len(s)
+
+    def flush(self):
+        self._f.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._f, name)
+
+
 def _setup_logging():
     """The .exe is built with --noconsole (no terminal window), which means
     Windows gives it NO stdout/stderr at all -- sys.stdout is None. Any bare
@@ -128,7 +160,7 @@ def _setup_logging():
                 log_path.unlink()
         except Exception:
             pass
-        log_file = open(log_path, "a", buffering=1, encoding="utf-8")
+        log_file = _StampedLog(open(log_path, "a", buffering=1, encoding="utf-8"))
         sys.stdout = log_file
         sys.stderr = log_file
         print(f"\n--- PC2Sonos starting: {log_dir} ---")

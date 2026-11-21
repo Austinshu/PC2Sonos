@@ -38,6 +38,36 @@ soco_config.REQUEST_TIMEOUT = 4.0
 RESYNC_INTERVAL_SECONDS = 10 * 60
 
 
+def _sweep_lan_for_sonos(timeout=0.4):
+    """IPs on this PC's own /24 with Sonos's control port (1400) open.
+    Used when multicast discovery comes back empty."""
+    import socket
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        from audio_engine import get_lan_ip
+        mine = get_lan_ip()
+        prefix = mine.rsplit(".", 1)[0]
+    except Exception:
+        return []
+
+    def probe(i):
+        ip = f"{prefix}.{i}"
+        if ip == mine:
+            return None
+        s = socket.socket()
+        s.settimeout(timeout)
+        try:
+            s.connect((ip, 1400))
+            return ip
+        except OSError:
+            return None
+        finally:
+            s.close()
+
+    with ThreadPoolExecutor(64) as ex:
+        return [ip for ip in ex.map(probe, range(1, 255)) if ip]
+
+
 def _track_metadata(title):
     """DIDL-Lite metadata for our stream, built explicitly instead of
     relying on SoCo's play_uri(title=...) shortcut.
@@ -214,7 +244,12 @@ class SpeakerManager:
         # for the unicast (cross-VLAN) discovery path so that if the one
         # configured seed is down, any other speaker we've seen still gets
         # us back to the whole household.
-        self._known_ips = set()
+        # seeded with the speakers reached last run, so a network where
+        # multicast discovery finds nothing still gets them within a second
+        # or two of launch instead of never (see _discover_zones)
+        self._known_ips = {str(i).strip() for i in (config.get("last_known_speaker_ips") or [])
+                           if str(i).strip()}
+        self._last_sweep = 0.0
         # set by the dashboard's "Rescan" button (and used to break the
         # discovery loop out of its wait in on_demand mode)
         self.rescan_requested = threading.Event()
@@ -311,6 +346,7 @@ class SpeakerManager:
             zones |= discover(timeout=5) or set()
         except Exception as e:
             print(f"[sonos] SSDP discovery error: {e}")
+        ssdp_found = bool(zones)
 
         seed_ips = [str(s).strip() for s in (config.get("sonos_seed_ips") or [])
                     if str(s).strip()]
@@ -335,6 +371,25 @@ class SpeakerManager:
                 zones |= (device.visible_zones or {device})
             except Exception as e:
                 print(f"[sonos] seed speaker {ip} unreachable: {e}")
+
+        if not ssdp_found:
+            # Multicast found nothing (routers and Wi-Fi access points often
+            # drop it), so look for speakers directly: any device with
+            # Sonos's control port open on this PC's own /24. About two
+            # seconds, and at most once a minute.
+            now = time.monotonic()
+            if now - self._last_sweep >= 60:
+                self._last_sweep = now
+                for ip in _sweep_lan_for_sonos():
+                    if ip in tried:
+                        continue
+                    tried.add(ip)
+                    try:
+                        device = SoCo(ip)
+                        _ = device.player_name
+                        zones |= (device.visible_zones or {device})
+                    except Exception as e:
+                        print(f"[sonos] sweep found {ip} but couldn't talk to it: {e}")
 
         if scan_cidrs and not zones:
             for cidr in scan_cidrs:
@@ -388,6 +443,7 @@ class SpeakerManager:
                         self.names[uid] = name
                     if groups is not None:
                         self.groups[uid] = groups
+                    config["last_known_speaker_ips"] = sorted(self._known_ips)
                     if uid not in self.speakers:
                         self.speakers[uid] = zone
                         if uid not in config["speakers"]:
