@@ -577,6 +577,21 @@ DASHBOARD_HTML = """
 
 <div class="card">
   <div class="card-header">
+    <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10v4h4l5 4V6L7 10z"/><path d="M16 9a4 4 0 0 1 0 6"/></svg></span>
+    <span class="card-title">Windows sound output</span>
+  </div>
+  <div class="card-desc" style="margin-bottom:8px;">PC2Sonos needs Windows' default output set to its virtual cable. If plugging in headphones or a monitor (or a sleep/wake) switched your output elsewhere and the Sonos went quiet, put it back here.</div>
+  <div id="defaultOutputNow" style="font-size:13px; color:#ccc; margin-bottom:8px;">Checking...</div>
+  <button onclick="revertDefaultOutput()">Revert to PC2Sonos</button>
+  <label style="display:flex; align-items:center; gap:8px; font-weight:400; font-size:13px; padding:10px 0 0 0;">
+    <input type="checkbox" id="manageDefaultOutput" onchange="setManageDefaultOutput()">
+    Set PC2Sonos as the default output every time it starts
+  </label>
+  <div id="defaultOutputResult" style="margin-top:8px; font-size:12px; color:#888;"></div>
+</div>
+
+<div class="card">
+  <div class="card-header">
     <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg></span>
     <span class="card-title">Sleep timer</span>
   </div>
@@ -1569,6 +1584,36 @@ async function loadLevel(){
     document.getElementById('levelFill').style.width = data.level + '%';
   } catch (e) {}
 }
+async function loadDefaultOutput(extra){
+  try {
+    const res = await fetch('/api/default_output', extra || {});
+    const d = await res.json();
+    if (!d.ok) { document.getElementById('defaultOutputResult').textContent = 'Failed: ' + (d.error || 'unknown error'); return d; }
+    const now = document.getElementById('defaultOutputNow');
+    now.textContent = '';
+    now.append('Windows is currently playing to: ');
+    const b = document.createElement('b'); b.textContent = d.current || 'unknown'; now.appendChild(b);
+    now.append(d.is_cable ? ' (correct)' : ' (not PC2Sonos)');
+    now.style.color = d.is_cable ? '#7fd17f' : '#f0b050';
+    document.getElementById('manageDefaultOutput').checked = d.manage;
+    return d;
+  } catch (e) {}
+}
+async function revertDefaultOutput(){
+  const el = document.getElementById('defaultOutputResult');
+  el.textContent = 'Switching...';
+  const d = await loadDefaultOutput({method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({revert: true})});
+  if (d && d.ok) el.textContent = d.message || 'Done.';
+}
+async function setManageDefaultOutput(){
+  const manage = document.getElementById('manageDefaultOutput').checked;
+  await loadDefaultOutput({method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({manage})});
+  document.getElementById('defaultOutputResult').textContent = manage
+    ? 'PC2Sonos will set itself as the default output each time it starts.'
+    : 'PC2Sonos will leave your default output alone when it starts.';
+}
 async function loadStreamQuality(){
   const res = await fetch('/api/stream_quality');
   const data = await res.json();
@@ -1654,6 +1699,8 @@ loadCaptureMethod();
 setInterval(loadCaptureMethod, 5000);
 loadSeedIps();
 loadStreamQuality();
+loadDefaultOutput();
+setInterval(loadDefaultOutput, 5000);
 loadSleepTimer();
 loadNowPlaying();
 setInterval(loadNowPlaying, 4000);
@@ -2155,6 +2202,55 @@ def api_devices():
         "current": get_current_render_device_names(),
         "configured": config.get("render_devices", []),
     })
+
+
+@app.route("/api/default_output", methods=["GET", "POST"])
+def api_default_output():
+    """GET: what the system's default output is right now, whether that is
+    the virtual cable PC2Sonos needs, and the 'set it at every launch'
+    preference. POST {"manage": bool} saves the preference; POST
+    {"revert": true} puts the default back to the virtual cable (for when
+    plugging in headphones or a monitor moved it elsewhere)."""
+    def current_and_ok():
+        if sys.platform == "win32":
+            from windows_audio import current_default_playback_name
+            name = current_default_playback_name()
+            return name, "cable in" in name.lower()   # "CABLE Input" or "CABLE In 16ch"
+        if sys.platform == "darwin":
+            from macos_audio import current_default_output
+            name = current_default_output()[1]
+            return name, config["capture_device_substr"].lower() in name.lower()
+        return "", True
+
+    message = ""
+    if request.method == "POST":
+        data = request.get_json(force=True) or {}
+        if "manage" in data:
+            config["manage_default_output"] = bool(data["manage"])
+            save_config(config)
+        if data.get("revert"):
+            try:
+                if sys.platform == "win32":
+                    from windows_audio import ensure_cable_is_default
+                    message = ensure_cable_is_default()
+                elif sys.platform == "darwin":
+                    from macos_audio import ensure_blackhole_is_default
+                    changed, message, previous = ensure_blackhole_is_default(config["capture_device_substr"])
+                    if changed and previous:
+                        config["previous_default_output"] = previous
+                        save_config(config)
+                # the capture stream was opened against whatever was default
+                # when it started; reopen so it follows the cable again
+                restart_capture()
+            except Exception as e:
+                return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
+    try:
+        name, ok = current_and_ok()
+    except Exception:
+        name, ok = "", True
+    return jsonify({"ok": True, "current": name, "is_cable": ok,
+                    "manage": config.get("manage_default_output", True),
+                    "message": message})
 
 
 @app.route("/api/platform_status")

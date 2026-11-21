@@ -146,9 +146,11 @@ def ensure_cable_is_default():
     Returns a human-readable status line for the log."""
     try:
         current = current_default_playback_name()
-        if "cable input" in current.lower():
+        if "cable in" in current.lower():   # "CABLE Input" or "CABLE In 16ch"
             return f"default output already OK ({current})"
         ok, detail = set_default_playback("CABLE Input")
+        if not ok:
+            ok, detail = set_default_playback("CABLE In")
         if ok:
             return (f"default output switched to '{detail}' "
                     f"(was '{current or 'unknown'}')")

@@ -201,9 +201,11 @@ DEFAULT_CONFIG = {
     # false, the dashboard opens in the browser automatically; after
     # that, use the tray icon (a startup toast still says it's running).
     "has_launched_before": False,
-    # macOS only: switch the default output to BlackHole at launch (the
-    # Windows build does the equivalent via windows_audio.py) and remember
-    # what it was so quitting can put it back.
+    # Switch the default output to the virtual cable (Windows: VB-Cable via
+    # windows_audio.py; macOS: BlackHole) at every launch. The dashboard
+    # has a checkbox to turn this off for people who'd rather pick the
+    # default themselves. macOS also remembers what it was so quitting can
+    # put it back.
     "manage_default_output": True,
     "previous_default_output": "",
     # Donation nag state -- see webapp.py's /api/donate/* routes. Once

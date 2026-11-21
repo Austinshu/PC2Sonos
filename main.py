@@ -321,8 +321,12 @@ def main():
         # this is the one manual Sound-settings step nobody should
         # ever have to do by hand
         try:
-            from windows_audio import ensure_cable_is_default
-            print(f"[audio] {ensure_cable_is_default()}")
+            if config.get("manage_default_output", True):
+                from windows_audio import ensure_cable_is_default
+                print(f"[audio] {ensure_cable_is_default()}")
+            else:
+                print("[audio] leaving the Windows default output alone "
+                      "(turned off in the dashboard)")
         except Exception as e:
             print(f"[audio] default-device helper unavailable: {e}")
 
