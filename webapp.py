@@ -878,12 +878,17 @@ async function refresh(){
              oninput="paintRange(this); this.nextElementSibling.textContent = this.value + '%'"
              onchange="setVol('${s.uid}', this.value)">
       <span style="width:36px; display:inline-block;">${s.volume}%</span>
-      <span class="status ${s.streaming ? 'on' : 'off'}">${s.streaming ? 'streaming' : 'idle'}</span>
+      <span class="status ${s.streaming ? 'on' : 'off'}">${s.streaming ? 'streaming' : (s.other_source ? 'on ' + s.other_source : 'idle')}</span>
+      ${s.other_source ? `<span style="flex-basis:100%; font-size:12px; color:#f0b050;">This speaker switched to ${s.other_source} by itself (a soundbar does this when the TV makes sound). <button class="btn-ghost" onclick="reclaim('${s.uid}')">Switch back to PC audio</button></span>` : ''}
       ${health}
     `;
     el.appendChild(div);
   });
   paintAllRanges();
+}
+async function reclaim(uid){
+  await fetch('/api/speaker/' + uid + '/reclaim', {method:'POST'});
+  refresh();
 }
 async function rescan(){
   const el = document.getElementById('rescanResult');
@@ -1844,6 +1849,16 @@ def api_set_enabled(uid):
     # real LAN IP instead, regardless of how the dashboard was reached.
     base_url = f"http://{get_lan_ip()}:{config['http_port']}"
     speaker_mgr.set_enabled(uid, bool(data.get("enabled")), base_url)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/speaker/<uid>/reclaim", methods=["POST"])
+def api_reclaim_speaker(uid):
+    """Switch a speaker that went to its TV input (or another source) back
+    to PC audio. Same LAN-IP rule as api_set_enabled."""
+    base_url = f"http://{get_lan_ip()}:{config['http_port']}"
+    if not speaker_mgr.reclaim(uid, base_url):
+        return jsonify({"ok": False, "error": "unknown speaker"}), 404
     return jsonify({"ok": True})
 
 

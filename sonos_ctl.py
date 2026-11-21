@@ -250,6 +250,9 @@ class SpeakerManager:
         self._known_ips = {str(i).strip() for i in (config.get("last_known_speaker_ips") or [])
                            if str(i).strip()}
         self._last_sweep = 0.0
+        # uid -> "TV" / "another source" while the speaker is playing
+        # something other than our stream (set by the watchdog)
+        self._other_source = {}
         # set by the dashboard's "Rescan" button (and used to break the
         # discovery loop out of its wait in on_demand mode)
         self.rescan_requested = threading.Event()
@@ -510,6 +513,7 @@ class SpeakerManager:
                     "enabled": cfg.get("enabled", True),
                     "volume": cfg.get("volume", 50),
                     "streaming": self.streams.get(uid, False),
+                    "other_source": self._other_source.get(uid, ""),
                     "ip": getattr(zone, "ip_address", "") or "",
                     "is_default": uid == config.get("default_speaker_uid"),
                     # surfaced so the dashboard can show "grouped with X, Y"
@@ -557,6 +561,17 @@ class SpeakerManager:
             config["speakers"].setdefault(
                 uid, {"enabled": True, "volume": 50})["enabled"] = True
             save_config(config)
+        return True
+
+    def reclaim(self, uid, base_url):
+        """Switch a speaker back to PC audio on the user's say-so (it had
+        gone to its TV input or another source). False if unknown."""
+        with self._lock:
+            zone = self.speakers.get(uid)
+        if zone is None:
+            return False
+        self._other_source.pop(uid, None)
+        self.start_stream(uid, zone, base_url)
         return True
 
     def request_rescan(self):
@@ -695,6 +710,8 @@ class SpeakerManager:
                     self.start_stream(uid, zone, base_url)
                     continue
 
+            if ours:
+                self._other_source.pop(uid, None)
             if ours and state == "PLAYING":
                 self.streams[uid] = True
                 now = time.monotonic()
@@ -714,8 +731,14 @@ class SpeakerManager:
                           f"(state={state}); restarting stream")
                     self.start_stream(uid, zone, base_url)
             else:
-                # user is playing something else on this speaker
+                # something else is loaded on this speaker. A soundbar (Ray,
+                # Beam, Arc...) takes its TV input by itself whenever the TV
+                # sends sound, which looks identical to the user choosing
+                # it, so we never fight it -- but we do record what it is,
+                # so the dashboard can say so and offer a one-click return.
                 self.streams[uid] = False
+                self._other_source[uid] = ("TV" if uri.startswith("x-sonos-htastream")
+                                           else "another source")
 
 
 speaker_mgr = SpeakerManager()
