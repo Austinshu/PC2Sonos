@@ -975,6 +975,127 @@ assert _after_trim <= 5, (f"a {_peak}-chunk backlog was still {_after_trim} chun
 assert _lockstep["written"] > 30 * 4096, "audio must keep playing while the backlog is trimmed"
 print(f"  {_peak}-chunk backlog trimmed to {_after_trim} within seconds, playback continued OK")
 
+print("[test] render loop: raising the delay is heard right away, not absorbed by the device buffer...")
+# A real output stream has a buffer of its own (PortAudio's ring, a few hundred
+# ms on macOS) that plays out in real time; a blocking write waits for room in
+# it. Seen live: raising local_delay_ms 630 -> 780 didn't move the PC speakers
+# at all -- while the loop held writes back to grow its delay, the device
+# buffer drained by the same amount, so the total stayed put.
+_RING_RATE = 44100
+
+
+class _RingStream(FakeStream):
+    def __init__(self, frame_bytes, seconds=0.3):
+        self.frame_bytes = frame_bytes
+        self.capacity = int(_RING_RATE * seconds)
+        self.segs = []            # [frames_left, is_marker, started]
+        self.clock = time.monotonic()
+        self.marker_heard = []
+        self.lock = threading.Lock()
+
+    def _drain(self):
+        now = time.monotonic()
+        todo = int((now - self.clock) * _RING_RATE)
+        if todo <= 0:
+            return
+        played = 0
+        while todo and self.segs:
+            seg = self.segs[0]
+            if seg[1] and not seg[2]:
+                seg[2] = True
+                self.marker_heard.append(self.clock + played / _RING_RATE)
+            n = min(todo, seg[0])
+            seg[0] -= n
+            todo -= n
+            played += n
+            if not seg[0]:
+                self.segs.pop(0)
+        # whole frames only, the remainder carried over -- dropping it on every
+        # call would play slower than real time. An empty device plays
+        # silence: time moves on regardless.
+        self.clock = self.clock + played / _RING_RATE if self.segs else now
+
+    def _fill(self):
+        return sum(s[0] for s in self.segs)
+
+    def get_write_available(self):
+        with self.lock:
+            self._drain()
+            return self.capacity - self._fill()
+
+    def write(self, data):
+        frames = len(data) // self.frame_bytes
+        while True:
+            with self.lock:
+                self._drain()
+                if self.capacity - self._fill() >= frames:
+                    self.segs.append([frames, any(data), False])
+                    return
+            time.sleep(0.002)
+
+
+class _RingPyAudio(FakePyAudio):
+    def open(self, **kwargs):
+        sample = 4 if kwargs["format"] == fake_pyaudio.paFloat32 else 2
+        self.stream = _RingStream(sample * kwargs["channels"])
+        return self.stream
+
+
+_ring_pa = _RingPyAudio()
+audio_engine._pa = _ring_pa
+_saved_ring_cfg = {k: audio_engine.config.get(k) for k in
+                   ("local_delay_ms", "local_eq_bass_db", "local_eq_mid_db", "local_eq_treble_db",
+                    "sample_rate", "channels", "local_volume", "local_render_gain", "render_devices")}
+audio_engine.config.update(local_delay_ms=450, local_eq_bass_db=0.0, local_eq_mid_db=0.0,
+                           local_eq_treble_db=0.0, sample_rate=_RING_RATE, channels=2,
+                           local_volume=1.0, local_render_gain=1.0)
+_ring_stop = threading.Event()
+_ring_thread = threading.Thread(target=audio_engine.render_loop,
+                                args=(_ring_stop, "Realtek"), daemon=True)
+_ring_thread.start()
+_silence_chunk = b"\x00\x00" * 1024 * 2
+_marker_chunk = b"\x00\x40" * 1024 * 2
+_ring_sent = []
+
+
+def _ring_feed(seconds, marker_at=None):
+    # real-time feeder, paced against the clock so sleep overshoot can't drift it
+    t0 = time.monotonic()
+    n = 0
+    while time.monotonic() - t0 < seconds:
+        due = t0 + n * 1024 / _RING_RATE
+        if time.monotonic() < due:
+            time.sleep(due - time.monotonic())
+        if marker_at is not None and n == int(marker_at * _RING_RATE / 1024):
+            _ring_sent.append(time.monotonic())
+            audio_engine.broadcaster.publish(_marker_chunk)
+        else:
+            audio_engine.broadcaster.publish(_silence_chunk)
+        n += 1
+
+
+# Lowering the delay by less than the 200ms drift guard pours the excess into the
+# device buffer, and every later raise was then soaked up by it draining -- a
+# ratchet every move of the slider turned.
+_ring_feed(2.0)                                # settle at 450ms...
+audio_engine.config["local_delay_ms"] = 300    # ...lower it by 150ms...
+_ring_feed(2.5, marker_at=1.5)                 # settle at 300ms, then a marker (heard before the next change)
+audio_engine.config["local_delay_ms"] = 450    # ...and raise it back
+_ring_feed(3.0, marker_at=1.5)
+_ring_stop.set()
+_ring_thread.join(timeout=3)
+audio_engine._pa = _real_pa_for_render
+audio_engine.config.update(_saved_ring_cfg)
+_heard = _ring_pa.stream.marker_heard
+# a marker can straddle two device writes, so take the first sound after each one
+_firsts = [min((h for h in _heard if h >= s), default=None) for s in _ring_sent]
+assert len(_ring_sent) == 2 and None not in _firsts, f"markers sent {_ring_sent}, heard {_heard}"
+_lat1, _lat2 = ((h - s) * 1000 for h, s in zip(_firsts, _ring_sent))
+assert abs((_lat2 - _lat1) - 150) <= 50, (  # 'full' to within a chunk (~23ms), at each end
+    f"raising the delay by 150ms moved playback by {_lat2 - _lat1:.0f}ms "
+    f"({_lat1:.0f}ms -> {_lat2:.0f}ms)")
+print(f"  +150ms of delay -> playback {_lat1:.0f}ms -> {_lat2:.0f}ms OK")
+
 r = client.get("/api/audio_sessions")
 body = r.get_json()
 assert r.status_code == 200 and "sessions" in body and body["mode"] == "system" and body["targets"] == []
