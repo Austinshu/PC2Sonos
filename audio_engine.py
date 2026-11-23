@@ -1373,9 +1373,29 @@ def _render_session(stop_event, device_substr):
     chunk_ms = CHUNK / float(capture_rate) * 1000.0
     last_catch_up_log = 0.0
     prev_volume = None  # the volume the last chunk ended on, for the ramp
+    write_available = getattr(stream, "get_write_available", None)
+    silence = bytes(CHUNK * render_channels * (4 if float_out else sample_width))
+    applied_delay_ms = config["local_delay_ms"]
 
     try:
         while not stop_event.is_set():
+            # A new delay starts over from a known state -- nothing held in
+            # `buf` or the queue, the device buffer full (kept so below) --
+            # instead of adjusting whatever the earlier ones left behind.
+            # Lowering the delay used to pour the difference into the device
+            # buffer, where the next raise was soaked up by it draining (a
+            # ratchet every move of the slider turned), so one setting could
+            # sound 100ms+ apart from one time to the next.
+            # (Not stop/start_stream to empty the device too: on macOS the
+            # stream can stay stopped, and every write after it fails.)
+            if config["local_delay_ms"] != applied_delay_ms:
+                applied_delay_ms = config["local_delay_ms"]
+                buf.clear()
+                while True:
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        break
             target_bytes = int(bytes_per_ms * config["local_delay_ms"])
             # Windows' volume keys and taskbar slider control the DEFAULT
             # playback device, which is the virtual cable -- not the speakers
@@ -1445,6 +1465,17 @@ def _render_session(stop_event, device_substr):
                         out = _apply_local_levels(out, volume, boost)
                 if out:
                     stream.write(out)
+
+            # While `buf` (re)fills to the delay, keep the device's own buffer
+            # (PortAudio's ring, a few hundred ms on macOS) topped up with
+            # silence. Left alone it played down while audio was held back, so
+            # a raised delay went unheard until it ran dry, and how full it
+            # happened to be decided the real delay -- making every calibration
+            # a guess. Kept full, what the speakers add is always
+            # local_delay_ms plus one fixed amount.
+            if len(buf) < target_bytes and write_available is not None:
+                while write_available() >= CHUNK:
+                    stream.write(silence)
     finally:
         broadcaster.unsubscribe(sid)
         stream.stop_stream()
